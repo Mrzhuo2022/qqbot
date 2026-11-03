@@ -1,0 +1,24 @@
+# NapCat（QQ 协议端）Docker 部署方式
+# 启动：docker compose up -d
+# 登录/配置：浏览器打开 http://127.0.0.1:6099 （WebUI）
+#
+# 不想用 Docker 的话，Windows 上也可以直接装 NapCat 本体，见 README。
+
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    restart: unless-stopped
+    # 使用 host 网络模式，便于后续对接其他服务，且避免端口映射冲突
+    network_mode: host
+    environment:
+      # 将 UID 和 GID 设置为你当前登录的用户，避免权限问题
+      - NAPCAT_UID=1000
+      - NAPCAT_GID=1000
+      # WebUI 登录令牌，建议修改为一个强密码
+      - WEBUI_TOKEN=your_strong_token_here
+    volumes:
+      # 持久化 QQ 登录信息
+      - ./data/QQ:/app/.config/QQ
+      # 持久化 NapCat 的配置文件
+      - ./data/config:/app/napcat/config
