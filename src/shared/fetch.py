@@ -83,12 +83,15 @@ async def safe_fetch(
     timeout: float = 20.0,
     max_redirects: int = 3,
     max_bytes: int | None = None,
+    read_body: bool = True,
     _transport: httpx.AsyncBaseTransport | None = None,
 ) -> httpx.Response:
     """抓取 URL，每一跳（含重定向目标）都校验公网地址，违规则抛 UnsafeURL。
 
     响应体流式读取，超过 max_bytes（默认 fetch_max_mb）中途掐断并抛
     PayloadTooLarge，防止把超大文件整个读进内存。
+    read_body=False 时不读正文、不解码（响应体为空，仅供取 .url/.headers）：
+    给只要「跳转后最终 URL」的调用方用，免疫服务端的压缩编码问题。
     """
     if max_bytes is None:
         max_bytes = plugin_config.fetch_max_mb * 1024 * 1024
@@ -104,6 +107,13 @@ async def safe_fetch(
                     location = resp.headers.get("location", "")
                     url = str(resp.url.join(location))
                     continue
+                if not read_body:
+                    return httpx.Response(
+                        resp.status_code,
+                        headers=resp.headers,
+                        content=b"",
+                        request=resp.request,
+                    )
                 # Content-Length 是压缩后的体积，可提前拒绝；没有它靠流式累计兜底
                 content_length = resp.headers.get("content-length", "")
                 if content_length.isdigit() and int(content_length) > max_bytes:

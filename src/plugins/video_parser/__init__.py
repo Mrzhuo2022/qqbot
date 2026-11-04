@@ -335,16 +335,20 @@ async def _resolve_bvid(url: str) -> str | None:
         if bvid:
             return bvid
     try:
-        # 这一步只为拿跳转后的最终 URL（BV 号在里面），正文内容用不上；
-        # 禁用压缩：B 站页面对部分 Accept-Encoding 组合会回「声称 gzip 实际
-        # brotli/zstd」的响应，流式解码直接抛 zlib 错误把整个解析带崩
-        resp = await safe_fetch(
-            url,
-            headers={**_bili_headers(), "Accept-Encoding": "identity"},
-            timeout=15,
-        )
-        m = BV_RE.search(str(resp.url))
-        return m.group() if m else None
+        # 只要跳转后的最终 URL（BV 号在里面）：read_body=False 不读不解码正文，
+        # B 站页面「声称 gzip 实际 brotli/zstd」的响应带不动解码，自然炸不到
+        resp = await safe_fetch(url, headers=_bili_headers(), timeout=15, read_body=False)
+        final_url = str(resp.url)
+        m = BV_RE.search(final_url)
+        if m:
+            return m.group()
+        # 短链跳到 av 形态目标页的兜底：av 号再换一次 BV
+        m = AV_ID_RE.search(final_url)
+        if m:
+            bvid = await _aid_to_bvid(m.group(1))
+            if bvid:
+                return bvid
+        return None
     except Exception as e:
         logger.warning("BV 号解析失败 %s: %s", url, e)
         return None

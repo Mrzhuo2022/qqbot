@@ -265,8 +265,8 @@ def test_resolve_bvid_direct_bv_no_fetch(monkeypatch):
     assert got == "BV1GJ411x7h7"
 
 
-def test_resolve_bvid_short_link_uses_identity_encoding(monkeypatch):
-    """短链跟随只取最终 URL：必须带 Accept-Encoding: identity（防 CDN 压缩解码炸裂）。"""
+def test_resolve_bvid_short_link_skips_body(monkeypatch):
+    """短链跟随只要最终 URL：read_body=False，正文不读不解码（免疫 CDN 压缩编码问题）。"""
     import asyncio
 
     from src.plugins import video_parser as vp
@@ -277,10 +277,32 @@ def test_resolve_bvid_short_link_uses_identity_encoding(monkeypatch):
         url = "https://www.bilibili.com/video/BV1UFnn6xE7A/?buvid=xx&p=1"
 
     async def fake_safe_fetch(url, **kw):
-        captured["headers"] = kw.get("headers") or {}
+        captured["read_body"] = kw.get("read_body")
         return _Resp()
 
     monkeypatch.setattr(vp, "safe_fetch", fake_safe_fetch)
     got = asyncio.run(vp._resolve_bvid("https://b23.tv/DVRAWwT?share_source=qq"))
     assert got == "BV1UFnn6xE7A"
-    assert captured["headers"]["Accept-Encoding"] == "identity"
+    assert captured["read_body"] is False
+
+
+def test_resolve_bvid_short_link_av_target(monkeypatch):
+    """短链跳到 av 形态目标页：av 号兜底换 BV，而不是直接放弃。"""
+    import asyncio
+
+    from src.plugins import video_parser as vp
+
+    class _Resp:
+        url = "https://www.bilibili.com/video/av170001/?p=1"
+
+    async def fake_safe_fetch(url, **kw):
+        return _Resp()
+
+    async def fake_aid_to_bvid(aid):
+        assert aid == "170001"
+        return "BV17x411w7KC"
+
+    monkeypatch.setattr(vp, "safe_fetch", fake_safe_fetch)
+    monkeypatch.setattr(vp, "_aid_to_bvid", fake_aid_to_bvid)
+    got = asyncio.run(vp._resolve_bvid("https://b23.tv/abc123"))
+    assert got == "BV17x411w7KC"

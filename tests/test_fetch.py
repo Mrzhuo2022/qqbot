@@ -149,3 +149,54 @@ def test_safe_fetch_default_limit_from_config(allow_all_urls, monkeypatch):
         asyncio.run(
             safe_fetch("https://example.com/mb", _transport=httpx.MockTransport(handler))
         )
+
+
+def test_safe_fetch_read_body_false_skips_content(allow_all_urls):
+    """read_body=False：正文不读不解码（坏压缩数据也带不动），仍拿到最终 URL。"""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        # 异步流式响应，模拟「声称 gzip 实际是坏数据」的服务端
+        async def bad_body():
+            yield b"\x1f\x8bgarbage"
+
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, content=bad_body())
+
+    transport = httpx.MockTransport(handler)
+    resp = asyncio.run(
+        safe_fetch(
+            "https://example.com/redirect-target",
+            read_body=False,
+            _transport=transport,
+        )
+    )
+    assert resp.status_code == 200
+    assert resp.content == b""  # 正文被跳过
+    assert str(resp.url) == "https://example.com/redirect-target"
+
+    # 对照：默认 read_body=True 读到这段坏压缩数据直接炸
+    with pytest.raises(httpx.DecodingError):
+        asyncio.run(
+            safe_fetch("https://example.com/redirect-target", _transport=transport)
+        )
+
+
+def test_safe_fetch_read_body_false_still_validates_redirects(monkeypatch):
+    """read_body=False 的重定向逐跳校验照常：跳到内网一样拒绝。"""
+    from src.shared.fetch import UnsafeURL
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "http://127.0.0.1/x"})
+
+    # 第一跳放行，仅 127.0.0.1 走拒绝路径；断言错误信息证明是第二跳拒的
+    # 内网目标，而不是第一跳 DNS 失败碰巧抛错（离线环境也能测准）
+    monkeypatch.setattr(fetch_mod, "url_allowed", lambda u: "127.0.0.1" not in u)
+    with pytest.raises(UnsafeURL) as ei:
+        asyncio.run(
+            safe_fetch(
+                "https://example.com/jump",
+                read_body=False,
+                max_redirects=2,
+                _transport=httpx.MockTransport(handler),
+            )
+        )
+    assert "127.0.0.1" in str(ei.value)
