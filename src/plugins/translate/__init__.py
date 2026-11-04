@@ -2,15 +2,19 @@
 
 - 第一个词是语言代码时可指定目标语言：/translate en 你好 → Hello
   （支持 en/ja/ko/fr/de/es/ru/zh）；不指定时中文译英语、其他译中文
+- 自然语言也能触发：「把早上好翻译成日语」「翻译成英语：hello」
+  （parse_nl_translate，只认祈使句式，问句不触发；未配置 AI 时保持沉默）
 - 译文只过 LLM 输出净化（CQ 码/控制字符），不携带任何不可信第三方内容
 - 按群限流（translate_rate_per_min）+ 群级开关 /bot off translate
 """
 
 import logging
+import re
 
-from nonebot import on_command
+from nonebot import on_command, on_message
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageEvent
 from nonebot.params import CommandArg
+from nonebot.rule import Rule
 
 from src.shared import llm
 from src.shared.config import plugin_config
@@ -53,6 +57,87 @@ def parse_target(args_text: str) -> tuple[str, str] | None:
     return AUTO_TARGET, args_text
 
 
+# ── 自然语言触发：「把X翻译成Y」「翻译成Y：X」────────────────
+
+# 中文语言名 → LANGS 的码（自然语言里没人说语言代码）
+_LANG_SYNONYMS = {
+    "英文": "en", "英语": "en", "日文": "ja", "日语": "ja",
+    "韩文": "ko", "韩语": "ko", "法文": "fr", "法语": "fr",
+    "德文": "de", "德语": "de", "西班牙文": "es", "西班牙语": "es",
+    "俄文": "ru", "俄语": "ru", "中文": "zh", "汉语": "zh",
+}
+_LANG_ALT = "|".join(_LANG_SYNONYMS)
+
+# 形式一：把 X 翻译/翻 成 Y（整句；text 与动词之间必须有内容）
+_NL_TR_GIVE = re.compile(
+    rf"^(?:帮我|给我)?把(?P<text>.{{1,200}}?)翻(?:译)?(?:成|为)"
+    rf"(?P<lang>{_LANG_ALT})[，。！!～~\s]*$"
+)
+# 形式二：翻译成 Y：X（必须有冒号，防「翻译成日语的方法」这类闲聊误触发；
+# 「翻译成/为」与「译」都可省略：「翻译日语：早上好」「翻日语：X」也成立）
+_NL_TR_COLON = re.compile(
+    rf"^翻(?:译)?(?:成|为)?(?P<lang>{_LANG_ALT})[：:]\s*(?P<text>.+)$"
+)
+
+
+def parse_nl_translate(text: str) -> tuple[str, str] | None:
+    """自然语言翻译解析：命中返回 (目标语言描述, 待翻译文本)，否则 None。
+
+    只认上面两种显式祈使句式；问句（含 ？）和命令（/ 开头）不触发。
+    返回类型与 parse_target 一致。
+    """
+    text = text.strip()
+    if not text or text.startswith("/") or "？" in text:
+        return None
+    m = _NL_TR_GIVE.match(text) or _NL_TR_COLON.match(text)
+    if not m:
+        return None
+    body = m.group("text").strip().strip("，。！!～~、 ")
+    if not body:
+        return None
+    return LANGS[_LANG_SYNONYMS[m.group("lang")]], body[:MAX_INPUT]
+
+
+def _nl_translate_ready(event: MessageEvent) -> bool:
+    """内容规则：LLM 可用且消息是祈使式翻译请求；未配置时保持沉默不接话。"""
+    return llm.llm_ready() and parse_nl_translate(event.get_plaintext()) is not None
+
+
+# 同为优先级 4：命令 matcher 先注册，"/翻译 ..." 会被命令先吃掉不会重复触发
+nl_translate = on_message(
+    rule=Rule(group_plugin_allowed("translate"), _nl_translate_ready),
+    priority=4, block=True,
+)
+
+
+@nl_translate.handle()
+async def handle_nl_translate(event: MessageEvent):
+    parsed = parse_nl_translate(event.get_plaintext())
+    if parsed is not None:
+        await _do_translate(nl_translate, event, *parsed)
+    await nl_translate.finish()
+
+
+async def _do_translate(matcher, event: MessageEvent, target: str, text: str) -> None:
+    """LLM 翻译并回译文：命令与自然语言触发共用（限流/进度提示/文案一致）。"""
+    if not _limiter.check(
+        event.group_id if isinstance(event, GroupMessageEvent) else f"u:{event.user_id}"
+    ):
+        await matcher.finish("翻得太频繁啦，一分钟后再试")
+
+    await send_notice(matcher, event, "⏳ 正在翻译…")
+    try:
+        reply = await llm.llm_chat(SYSTEM_TMPL.format(target=target), text)
+    except Exception:
+        logger.exception("翻译失败")
+        await matcher.finish("翻译出错了，稍后再试")
+    await send_reply(
+        matcher, event, clip(reply, plugin_config.reply_max_chars),
+        plugin_config.reply_chunk_chars, quote=False,
+    )
+    await matcher.finish()
+
+
 # 优先级 4：抢在 chat(5) 之前，避免 "/translate" 被当成聊天内容
 translate_cmd = on_command(
     "translate", aliases={"翻译"}, rule=group_plugin_allowed("translate"), priority=4, block=True
@@ -65,23 +150,6 @@ async def handle_translate(event: MessageEvent, args: Message = CommandArg()):
     if parsed is None:
         await translate_cmd.finish(USAGE)
     target, text = parsed
-    text = text[:MAX_INPUT]
-
     if not llm.llm_ready():
         await translate_cmd.finish("AI 还没配置好，翻译暂时用不了")
-    if not _limiter.check(
-        event.group_id if isinstance(event, GroupMessageEvent) else f"u:{event.user_id}"
-    ):
-        await translate_cmd.finish("翻得太频繁啦，一分钟后再试")
-
-    await send_notice(translate_cmd, event, "⏳ 正在翻译…")
-    try:
-        reply = await llm.llm_chat(SYSTEM_TMPL.format(target=target), text)
-    except Exception:
-        logger.exception("翻译失败")
-        await translate_cmd.finish("翻译出错了，稍后再试")
-    await send_reply(
-        translate_cmd, event, clip(reply, plugin_config.reply_max_chars),
-        plugin_config.reply_chunk_chars, quote=False,
-    )
-    await translate_cmd.finish()
+    await _do_translate(translate_cmd, event, target, text)

@@ -8,6 +8,7 @@ import pytest
 from openai import BadRequestError
 from openai.types.image import Image
 
+from src.plugins.image_gen import parse_nl_prompt
 from src.shared import image_gen
 from src.shared.config import plugin_config
 
@@ -178,3 +179,32 @@ def test_generate_unconfigured_raises(monkeypatch):
     _cfg(monkeypatch, key="", model="")
     with pytest.raises(RuntimeError):
         asyncio.run(image_gen.generate("一只猫"))
+
+# ── 自然语言触发解析（parse_nl_prompt）──────────────────────
+
+
+def test_nl_prompt_basic_forms():
+    assert parse_nl_prompt("画一张戴墨镜的橘猫") == "戴墨镜的橘猫"
+    assert parse_nl_prompt("画个夕阳下的海滩") == "夕阳下的海滩"
+    assert parse_nl_prompt("画只橘猫在打鼓") == "橘猫在打鼓"
+    assert parse_nl_prompt("帮我画一张赛博朋克城市") == "赛博朋克城市"
+    assert parse_nl_prompt("给我画一幅星空") == "星空"
+    assert parse_nl_prompt("麻烦画个猪") == "猪"
+
+
+def test_nl_prompt_strips_trailing_particles():
+    assert parse_nl_prompt("画一张猫吧") == "猫"
+    assert parse_nl_prompt("画一个城堡。") == "城堡"
+
+
+def test_nl_prompt_rejects_non_imperative():
+    # 没有量词的「画」开头闲聊、别人画的叙述句、问句、命令都不触发
+    assert parse_nl_prompt("画画好难") is None
+    assert parse_nl_prompt("画得不错") is None
+    assert parse_nl_prompt("他画了一张地图") is None
+    assert parse_nl_prompt("我画了个圈") is None
+    assert parse_nl_prompt("画一张猫吗？") is None
+    assert parse_nl_prompt("画一张猫要多久") is None
+    assert parse_nl_prompt("/生图 猫") is None
+    assert parse_nl_prompt("") is None
+    assert parse_nl_prompt("今天天气不错") is None
