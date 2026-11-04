@@ -22,3 +22,6 @@ services:
       - ./data/QQ:/app/.config/QQ
       # 持久化 NapCat 的配置文件
       - ./data/config:/app/napcat/config
+      # 视频解析发的是 file:// 绝对路径，协议端（容器）必须能在同一路径读到文件：
+      # 把 bot 仓库的 data/videos 挂进来，左右路径必须逐字符一致
+      # - /home/xxx/qqbot/data/videos:/home/xxx/qqbot/data/videos

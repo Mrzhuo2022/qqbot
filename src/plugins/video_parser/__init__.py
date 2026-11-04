@@ -335,7 +335,14 @@ async def _resolve_bvid(url: str) -> str | None:
         if bvid:
             return bvid
     try:
-        resp = await safe_fetch(url, headers=_bili_headers(), timeout=15)
+        # 这一步只为拿跳转后的最终 URL（BV 号在里面），正文内容用不上；
+        # 禁用压缩：B 站页面对部分 Accept-Encoding 组合会回「声称 gzip 实际
+        # brotli/zstd」的响应，流式解码直接抛 zlib 错误把整个解析带崩
+        resp = await safe_fetch(
+            url,
+            headers={**_bili_headers(), "Accept-Encoding": "identity"},
+            timeout=15,
+        )
         m = BV_RE.search(str(resp.url))
         return m.group() if m else None
     except Exception as e:
@@ -427,6 +434,7 @@ async def _send_video(event: MessageEvent, url: str, bvid: str | None) -> None:
             logger.warning("视频下载失败 %s: %s", url, e)
             # 原始异常可能带接口地址等内部细节，不回显到群里
             await video_matcher.send("视频下载失败了，稍后再试试吧")
+            return  # path 未绑定，不 return 会掉进下面的发送分支二次报错
 
         try:
             await video_matcher.send(MessageSegment.video(path.resolve().as_uri()))

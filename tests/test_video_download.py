@@ -244,3 +244,43 @@ def test_compose_reply_llm_failure_falls_back():
     reply = _compose_reply("测试视频", "标题：测试视频\n简介：desc", "", "", True)
     assert "🎬 视频解析" in reply
     assert "未配置" not in reply
+
+
+# ── 短链 → BV 号解析（b23.tv 跳转）─────────────────────────
+
+
+def test_resolve_bvid_direct_bv_no_fetch(monkeypatch):
+    """URL 里已带 BV 号：直接返回，不发任何请求。"""
+    import asyncio
+
+    from src.plugins import video_parser as vp
+
+    def _no_fetch(*a, **kw):
+        raise AssertionError("不应发起网络请求")
+
+    monkeypatch.setattr(vp, "safe_fetch", _no_fetch)
+    # 短链无 BV/av 字样 → 走 fetch 路径（被上面的桩拦下）→ 返回 None
+    assert asyncio.run(vp._resolve_bvid("https://b23.tv/x")) is None
+    got = asyncio.run(vp._resolve_bvid("https://www.bilibili.com/video/BV1GJ411x7h7/?p=1"))
+    assert got == "BV1GJ411x7h7"
+
+
+def test_resolve_bvid_short_link_uses_identity_encoding(monkeypatch):
+    """短链跟随只取最终 URL：必须带 Accept-Encoding: identity（防 CDN 压缩解码炸裂）。"""
+    import asyncio
+
+    from src.plugins import video_parser as vp
+
+    captured: dict = {}
+
+    class _Resp:
+        url = "https://www.bilibili.com/video/BV1UFnn6xE7A/?buvid=xx&p=1"
+
+    async def fake_safe_fetch(url, **kw):
+        captured["headers"] = kw.get("headers") or {}
+        return _Resp()
+
+    monkeypatch.setattr(vp, "safe_fetch", fake_safe_fetch)
+    got = asyncio.run(vp._resolve_bvid("https://b23.tv/DVRAWwT?share_source=qq"))
+    assert got == "BV1UFnn6xE7A"
+    assert captured["headers"]["Accept-Encoding"] == "identity"
