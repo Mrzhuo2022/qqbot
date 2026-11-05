@@ -1,0 +1,54 @@
+# SnowLuma（QQ 协议端）Docker 部署方式
+# 官方镜像：motricseven7/snowluma（内置 Linux QQ、Xvfb、noVNC，无需单独下载 Release 包）
+# 启动：docker compose up -d
+# 升级：docker compose pull && docker compose up -d
+# 登录/配置：
+#   扫码登录  http://127.0.0.1:6081 （noVNC 远程桌面，VNC 密码在首次启动日志里）
+#   WebUI    http://127.0.0.1:5099 （初始账号 admin，密码在首次启动日志里）
+#   对接 bot：WebUI 的 OneBot 网络配置里按 NapCat 原方式配反向 WS 指向 NoneBot
+#   （host 网络下直接 ws://127.0.0.1:8080/onebot/v11/ws，端口按实际改）
+
+services:
+  snowluma:
+    image: motricseven7/snowluma:latest
+    container_name: snowluma
+    restart: unless-stopped
+    # 与 napcat 同款 host 网络模式：bot 直连无需端口映射，file:// 视频路径可保持一致
+    network_mode: host
+    # QQ 基于 Chromium，默认共享内存会崩溃，官方要求 1g
+    shm_size: 1gb
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 1048576
+    # hook 通过 ptrace 注入 QQ 进程，这两项为官方必备项，不能删
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      # 将 UID 和 GID 设置为你当前登录的用户，避免权限问题（与 napcat 一致）
+      - SNOWLUMA_UID=1000
+      - SNOWLUMA_GID=1000
+      # noVNC 密码；留空则首次启动随机生成并打印到日志
+      - VNC_PASSWD=
+      # 首次启动免 EULA/隐私政策确认（无人值守部署用）
+      - SNOWLUMA_ACCEPT_EULA=1
+      - SNOWLUMA_ACCEPT_PRIVACY=1
+    volumes:
+      # SnowLuma 配置/缓存（含 onebot_<uin>.json、runtime.json），删了会丢 OneBot 网络配置
+      - snowluma-data:/app/data
+      # 持久化 QQ 登录信息，删了要重新扫码
+      - snowluma-qq-config:/app/.config
+      - snowluma-qq-data:/app/.local/share
+      # 视频解析发的是 file:// 绝对路径，协议端（容器）必须能在同一路径读到文件：
+      # 把 bot 仓库的 data/videos 挂进来，左右路径必须逐字符一致
+      # - /home/xxx/qqbot/data/videos:/home/xxx/qqbot/data/videos
+
+volumes:
+  snowluma-data:
+    name: snowluma-data
+  snowluma-qq-config:
+    name: snowluma-qq-config
+  snowluma-qq-data:
+    name: snowluma-qq-data
