@@ -61,6 +61,24 @@ def test_bili_url_from_text_ignores_non_bili():
     assert bili_url_from_text("随便聊聊") is None
 
 
+def test_bili_url_from_text_bare_av():
+    assert (
+        bili_url_from_text("快看av170001")
+        == "https://www.bilibili.com/video/av170001"
+    )
+    # 前面贴着字母数字的不算（"nav170001"）
+    assert bili_url_from_text("nav170001") is None
+
+
+def test_bili_url_from_text_bare_b23():
+    r"""无协议头短链：中文紧贴着写也要能认（\w 含 CJK，lookbehind 用 ASCII 类）。"""
+    assert (
+        bili_url_from_text("看这个b23.tv/WA4mdJJ 哈哈") == "https://b23.tv/WA4mdJJ"
+    )
+    # 前面贴着字母/点的不算（"notb23.tv"、"x.b23.tv"）
+    assert bili_url_from_text("notb23.tv/abc") is None
+
+
 def test_bili_url_from_json_card():
     class FakeSeg:
         data: ClassVar = {
@@ -306,3 +324,284 @@ def test_resolve_bvid_short_link_av_target(monkeypatch):
     monkeypatch.setattr(vp, "_aid_to_bvid", fake_aid_to_bvid)
     got = asyncio.run(vp._resolve_bvid("https://b23.tv/abc123"))
     assert got == "BV17x411w7KC"
+
+
+# ── 动态链接解析（b23 跳到 /opus/<id>）────────────────────
+
+
+def _dyn_item(
+    major_type: str,
+    bvid: str | None = None,
+    author: str = "UP主",
+    desc: str = "",
+    image_srcs: list[str] | None = None,
+    orig=None,
+):
+    major = {"type": major_type}
+    if bvid:
+        major["archive"] = {"bvid": bvid}
+    if image_srcs:
+        major["draw"] = {"items": [{"src": s} for s in image_srcs]}
+    dyn = {"major": major}
+    if desc:
+        dyn["desc"] = {"text": desc}
+    item = {"modules": {"module_author": {"name": author}, "module_dynamic": dyn}}
+    if orig is not None:
+        item["orig_item"] = orig
+    return item
+
+
+def test_parse_dynamic_item_video():
+    from src.plugins.video_parser import _parse_dynamic_item
+
+    bvid, content, label = _parse_dynamic_item(_dyn_item("MAJOR_TYPE_ARCHIVE", "BV1yZ4u6BEDS"))
+    assert bvid == "BV1yZ4u6BEDS"
+    assert content is None
+    assert label == "UP主的视频动态"
+
+
+def test_parse_dynamic_item_draw():
+    """纯图动态（无文字）：内容里只有图片，文字为空串。"""
+    from src.plugins.video_parser import _parse_dynamic_item
+
+    bvid, content, label = _parse_dynamic_item(
+        _dyn_item(
+            "MAJOR_TYPE_DRAW",
+            author="织部Kaka",
+            image_srcs=["https://i0.hdslb.com/bfs/a.jpg"],
+        )
+    )
+    assert bvid is None
+    assert label == "织部Kaka的图文动态"
+    assert content["author"] == "织部Kaka"
+    assert content["text"] == ""
+    assert content["images"] == ["https://i0.hdslb.com/bfs/a.jpg"]
+
+
+def test_parse_dynamic_item_text_with_opus():
+    """新版图文动态：文字在 opus.title/summary 里，desc 反而为空。"""
+    from src.plugins.video_parser import _parse_dynamic_item
+
+    item = _dyn_item("MAJOR_TYPE_DRAW")
+    item["modules"]["module_dynamic"]["major"]["opus"] = {
+        "title": "标题",
+        "summary": {"text": "正文内容"},
+    }
+    bvid, content, _label = _parse_dynamic_item(item)
+    assert bvid is None
+    assert content["text"] == "标题\n正文内容"
+
+
+def test_parse_dynamic_item_forward_content():
+    """转发图文：转发者的评论 + 原动态的文字图片都收集。"""
+    from src.plugins.video_parser import _parse_dynamic_item
+
+    fwd = _dyn_item(
+        "MAJOR_TYPE_FORWARD",
+        desc="转发理由",
+        orig=_dyn_item(
+            "MAJOR_TYPE_DRAW",
+            desc="原文内容",
+            image_srcs=["https://i0.hdslb.com/bfs/x.jpg", "https://i0.hdslb.com/bfs/y.jpg"],
+        ),
+    )
+    bvid, content, label = _parse_dynamic_item(fwd)
+    assert bvid is None
+    assert label == "UP主的转发动态"
+    assert content["text"] == "转发理由\n原文内容"
+    assert len(content["images"]) == 2
+
+
+def test_parse_dynamic_item_images_domain_filter():
+    """非 B 站 CDN 的图片 URL 一律丢弃（防 SSRF 姿态，URL 由协议端直接抓）。"""
+    from src.plugins.video_parser import _parse_dynamic_item
+
+    _bvid, content, _label = _parse_dynamic_item(
+        _dyn_item(
+            "MAJOR_TYPE_DRAW",
+            desc="有文字所以 content 不为空",
+            image_srcs=[
+                "https://i0.hdslb.com/bfs/ok.jpg",
+                "http://evil.example.com/a.jpg",
+                "https://bilibili.com.evil.example.com/b.jpg",
+            ],
+        )
+    )
+    assert content["images"] == ["https://i0.hdslb.com/bfs/ok.jpg"]
+
+
+def test_parse_dynamic_item_forward_video():
+    """转发动态：视频在被转发的原动态里，也要能取到。"""
+    from src.plugins.video_parser import _parse_dynamic_item
+
+    fwd = _dyn_item(
+        "MAJOR_TYPE_FORWARD", orig=_dyn_item("MAJOR_TYPE_ARCHIVE", "BV1GJ411x7h7")
+    )
+    bvid, content, label = _parse_dynamic_item(fwd)
+    assert bvid == "BV1GJ411x7h7"
+    assert content is None
+    assert label == "UP主的转发视频动态"
+
+
+def test_parse_dynamic_item_live_no_content():
+    """直播/专栏这类没有可转发文字图片的：content 为 None，走类型提示。"""
+    from src.plugins.video_parser import _parse_dynamic_item
+
+    bvid, content, label = _parse_dynamic_item(_dyn_item("MAJOR_TYPE_LIVE_RCMD"))
+    assert bvid is None
+    assert content is None
+    assert label == "UP主的直播动态"
+
+
+def test_parse_dynamic_item_sanitize_author():
+    """作者名是不可信输入：CQ 码被洗掉、换行折叠、超长截断。"""
+    from src.plugins.video_parser import _parse_dynamic_item
+
+    bvid, _content, label = _parse_dynamic_item(
+        _dyn_item("MAJOR_TYPE_DRAW", author="[CQ:at,qq=all]\n假装管理员", desc="x")
+    )
+    assert bvid is None
+    assert label == "假装管理员的图文动态"
+
+
+def test_resolve_bvid_dynamic_with_video(monkeypatch):
+    """短链跳到动态页且动态带视频：取出 BV，后续走正常视频流程。"""
+    import asyncio
+
+    from src.plugins import video_parser as vp
+
+    class _Resp:
+        url = "https://www.bilibili.com/opus/1267183362902065160?share_from=dynamic"
+
+    async def fake_safe_fetch(url, **kw):
+        return _Resp()
+
+    async def fake_lookup(dyn_id):
+        assert dyn_id == "1267183362902065160"
+        return "BV1yZ4u6BEDS", None, "UP主的视频动态"
+
+    monkeypatch.setattr(vp, "safe_fetch", fake_safe_fetch)
+    monkeypatch.setattr(vp, "_dynamic_lookup", fake_lookup)
+    got = asyncio.run(vp._resolve_bvid("https://b23.tv/WA4mdJJ?share_source=qq"))
+    assert got == "BV1yZ4u6BEDS"
+
+
+def test_resolve_bvid_dynamic_draw_raises(monkeypatch):
+    """短链跳到纯图文动态：抛 NotAVideoLink 且带出可转发内容。"""
+    import asyncio
+
+    import pytest
+
+    from src.plugins import video_parser as vp
+    from src.plugins.video_parser import NotAVideoLink
+
+    class _Resp:
+        url = "https://www.bilibili.com/opus/1267183362902065160"
+
+    async def fake_safe_fetch(url, **kw):
+        return _Resp()
+
+    async def fake_lookup(dyn_id):
+        return None, {
+            "author": "织部Kaka",
+            "label": "织部Kaka的图文动态",
+            "text": "",
+            "images": ["https://i0.hdslb.com/bfs/a.jpg"],
+        }, "织部Kaka的图文动态"
+
+    monkeypatch.setattr(vp, "safe_fetch", fake_safe_fetch)
+    monkeypatch.setattr(vp, "_dynamic_lookup", fake_lookup)
+    with pytest.raises(NotAVideoLink, match="织部Kaka的图文动态，没有视频") as ei:
+        asyncio.run(vp._resolve_bvid("https://b23.tv/WA4mdJJ"))
+    assert ei.value.content["images"] == ["https://i0.hdslb.com/bfs/a.jpg"]
+
+
+def test_resolve_bvid_dynamic_lookup_fail(monkeypatch):
+    """动态接口失败（风控/删除）：静默回 None，走通用失败提示，不冒充「不是视频」。"""
+    import asyncio
+
+    from src.plugins import video_parser as vp
+
+    class _Resp:
+        url = "https://www.bilibili.com/opus/1267183362902065160"
+
+    async def fake_safe_fetch(url, **kw):
+        return _Resp()
+
+    async def fake_lookup(dyn_id):
+        return None
+
+    monkeypatch.setattr(vp, "safe_fetch", fake_safe_fetch)
+    monkeypatch.setattr(vp, "_dynamic_lookup", fake_lookup)
+    assert asyncio.run(vp._resolve_bvid("https://b23.tv/WA4mdJJ")) is None
+
+
+def test_resolve_bvid_t_bilibili_direct(monkeypatch):
+    """t.bilibili.com 直链（实测 200 不跳转）：不走 safe_fetch，直接查动态接口。"""
+    import asyncio
+
+    from src.plugins import video_parser as vp
+
+    def _no_fetch(*a, **kw):
+        raise AssertionError("t.bilibili 直链不应发起跳转请求")
+
+    async def fake_dynamic_bvid(dyn_id):
+        assert dyn_id == "1267183362902065160"
+        return "BV1yZ4u6BEDS"
+
+    monkeypatch.setattr(vp, "safe_fetch", _no_fetch)
+    monkeypatch.setattr(vp, "_dynamic_bvid", fake_dynamic_bvid)
+    got = asyncio.run(vp._resolve_bvid("https://t.bilibili.com/1267183362902065160"))
+    assert got == "BV1yZ4u6BEDS"
+
+
+def test_resolve_bvid_opus_direct_no_fetch(monkeypatch):
+    """opus 直链同样不用走跳转请求。"""
+    import asyncio
+
+    from src.plugins import video_parser as vp
+
+    def _no_fetch(*a, **kw):
+        raise AssertionError("opus 直链不应发起跳转请求")
+
+    async def fake_dynamic_bvid(dyn_id):
+        return None
+
+    monkeypatch.setattr(vp, "safe_fetch", _no_fetch)
+    monkeypatch.setattr(vp, "_dynamic_bvid", fake_dynamic_bvid)
+    assert (
+        asyncio.run(vp._resolve_bvid("https://www.bilibili.com/opus/1267183362902065160"))
+        is None
+    )
+
+
+def test_resolve_bvid_non_video_labels(monkeypatch):
+    """直播/番剧/专栏跳转后：说明类型，不带可转发内容。"""
+    import asyncio
+
+    import pytest
+
+    from src.plugins import video_parser as vp
+    from src.plugins.video_parser import NotAVideoLink
+
+    cases = [
+        ("https://live.bilibili.com/6?share_source=copy_link", "直播间链接"),
+        ("https://www.bilibili.com/bangumi/play/ep477297", "番剧/影视链接"),
+        ("https://www.bilibili.com/read/cv25000000/", "专栏文章链接"),
+    ]
+
+    class _Resp:
+        def __init__(self, url):
+            self.url = url
+
+    def _make_fetch(final_url):
+        async def fake_safe_fetch(u, **kw):
+            return _Resp(final_url)
+
+        return fake_safe_fetch
+
+    for final_url, label in cases:
+        monkeypatch.setattr(vp, "safe_fetch", _make_fetch(final_url))
+        with pytest.raises(NotAVideoLink, match=label) as ei:
+            asyncio.run(vp._resolve_bvid("https://b23.tv/abc123"))
+        assert ei.value.content is None

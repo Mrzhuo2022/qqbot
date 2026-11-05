@@ -4,6 +4,8 @@ B 站链接（含 b23.tv 短链）走官方 API 拿视频信息，
 其他视频站点（YouTube / X / 抖音等）走 yt-dlp 提取元数据，
 最后交给 LLM 生成摘要；未配置 LLM 时退回纯信息卡片。
 
+- b23 短链可能跳到动态页：带视频的动态（含转发）提取 BV 继续走视频流程，
+  纯图文/文字动态直接转发内容（文字卡片 + 前几张图），直播/专栏等说明类型
 - 同一链接 30 分钟内重复发送直接用缓存（省 token、省请求）
 - B站接口遇风控（-352）可在 .env 配 bili_cookie 缓解
 - 标题/简介是网友可编辑的不可信输入：<untrusted_data> 边界包裹，
@@ -16,6 +18,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from nonebot import on_message, require
@@ -38,6 +41,7 @@ from src.shared.utils import (
     group_allowed,
     looks_suspicious,
     sanitize_bot_output,
+    sanitize_one_line,
     send_notice,
     send_reply,
     spawn,
@@ -50,21 +54,38 @@ BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 # 卡片/链接里的 av 号：av 紧跟数字，且前面不能是字母数字（"nav123" 不算）
 AV_ID_RE = re.compile(r"(?<![0-9A-Za-z])av(\d{4,15})")
 # 无协议头的 B 站短链：QQ 小程序卡片常存 "b23.tv/xxxx"（没有 https://）；
-# 前面不能是字母数字或点（"notb23.tv" 不算）
-B23_SHORT_RE = re.compile(r"(?:https?://)?(?<![\w.])b23\.tv/[0-9A-Za-z]+")
+# 前面不能是 ASCII 字母数字或点（"notb23.tv" 不算，但中文紧贴着写不算误命中）
+B23_SHORT_RE = re.compile(r"(?:https?://)?(?<![0-9A-Za-z.])b23\.tv/[0-9A-Za-z]+")
 CARD_URL_RE = re.compile(r"https?://[^\s\"'\\<>]+")
+# 动态页路径：/opus/<id>、/dynamic/<id>（短链跳转落点）或 t.bilibili.com/<id>
+# （t 域直连 200 不跳转，所以也要认）
+DYN_ID_RE = re.compile(r"(?:(?:opus|dynamic)/|t\.bilibili\.com/)(\d{8,25})")
+# 明确「不是视频」的 B 站页面形态：识别后直接说明类型，别让用户白等重试
+_NON_VIDEO_URL_LABELS = (
+    (re.compile(r"live\.bilibili\.com/(?:h5/)?\d+"), "直播间链接"),
+    (re.compile(r"/bangumi/play/(?:ep|ss)\d+"), "番剧/影视链接"),
+    (re.compile(r"/read/cv\d+"), "专栏文章链接"),
+    (re.compile(r"/audio/au\d+"), "音频链接"),
+    (re.compile(r"space\.bilibili\.com/\d+"), "用户主页链接"),
+)
 
 
 def bili_url_from_text(text: str) -> str | None:
-    """从文本提取B站目标：优先完整链接，其次裸 BV 号（补全成链接）。"""
+    """从文本提取B站目标：完整链接优先，其次裸 BV/av 号、无协议头的 b23 短链（补全成链接）。"""
     url = extract_first_url(text)
     if url and VIDEO_DOMAIN_RE.search(url):
         return url
-    # 非 B站链接的路径里可能碰巧含 BV 样式串，剔除链接再找裸 BV
+    # 非 B站链接的路径里可能碰巧含 BV 样式串，剔除链接再找裸 ID
     scan_text = text.replace(url, " ") if url else text
     m = BV_RE.search(scan_text)
     if m:
         return f"https://www.bilibili.com/video/{m.group()}"
+    m = AV_ID_RE.search(scan_text)
+    if m:
+        return f"https://www.bilibili.com/video/av{m.group(1)}"
+    m = B23_SHORT_RE.search(scan_text)
+    if m:
+        return m.group() if m.group().startswith("http") else f"https://{m.group()}"
     return None
 
 
@@ -324,8 +345,132 @@ async def _aid_to_bvid(aid: str) -> str | None:
         return None
 
 
+class NotAVideoLink(ValueError):
+    """链接是B站内容但确定不是视频；content 非空时是可直接转发的动态内容。"""
+
+    def __init__(self, msg: str, content: dict | None = None):
+        super().__init__(msg)
+        self.content = content
+
+
+# 动态 major.type → 用户能看懂的说法
+_DYNAMIC_TYPE_LABELS = {
+    "MAJOR_TYPE_ARCHIVE": "视频动态",
+    "MAJOR_TYPE_DRAW": "图文动态",
+    "MAJOR_TYPE_ARTICLE": "专栏动态",
+    "MAJOR_TYPE_LIVE_RCMD": "直播动态",
+    "MAJOR_TYPE_MEDIALIST": "收藏夹动态",
+    "MAJOR_TYPE_PGC": "番剧动态",
+    "MAJOR_TYPE_COURSES": "课程动态",
+    "MAJOR_TYPE_FORWARD": "转发动态",
+    "MAJOR_TYPE_NONE": "文字动态",
+}
+
+# 动态图片转发上限：图文动态最多几十张图，全发会刷屏
+_DYNAMIC_MAX_IMAGES = 3
+# 图片只转发 B 站自家 CDN：URL 来自 API 返回，按项目的防 SSRF 姿态收紧域
+_BILI_IMG_HOSTS = ("hdslb.com", "bilibili.com")
+
+
+def _parse_dynamic_item(item: dict) -> tuple[str | None, dict | None, str]:
+    """动态详情 item → (BV号或None, 可转发内容或None, "某某的XX动态")。
+
+    可转发内容 = {"author", "label", "text", "images"}，文字/图文/转发动态
+    （文字和图片含被转发原动态的）才有；视频动态（含转发）只给 BV 号。
+    作者名是不可信输入，出群前过 sanitize_one_line。
+    """
+    author = sanitize_one_line(
+        ((item.get("modules") or {}).get("module_author") or {}).get("name") or "B站用户"
+    )
+    chain = [item]
+    if item.get("orig_item"):
+        chain.append(item["orig_item"])
+    label_type = ""
+    texts: list[str] = []
+    images: list[str] = []
+    for cur in chain:
+        dyn = ((cur.get("modules") or {}).get("module_dynamic")) or {}
+        major = dyn.get("major") or {}
+        bvid = (major.get("archive") or {}).get("bvid") or ""
+        if BV_RE.fullmatch(bvid):
+            kind = "转发视频动态" if cur is not item else "视频动态"
+            return bvid, None, f"{author}的{kind}"
+        if not label_type and major.get("type") in _DYNAMIC_TYPE_LABELS:
+            label_type = major["type"]
+        # 文字：desc 是旧版正文，opus 是新版图文（title+summary）
+        opus = major.get("opus") or {}
+        for piece in (
+            (opus.get("title") or "").strip(),
+            ((opus.get("summary") or {}).get("text") or "").strip(),
+            ((dyn.get("desc") or {}).get("text") or "").strip(),
+        ):
+            if piece:
+                texts.append(piece)
+        for pic in (major.get("draw") or {}).get("items") or []:
+            src = (pic or {}).get("src") or ""
+            host = urlparse(src).hostname or ""
+            if host.endswith(_BILI_IMG_HOSTS):
+                images.append(src)
+    label = f"{author}的{_DYNAMIC_TYPE_LABELS.get(label_type, '动态')}"
+    if texts or images:
+        return None, {"author": author, "label": label, "text": "\n".join(texts), "images": images}, label
+    return None, None, label
+
+
+async def _dynamic_lookup(dyn_id: str) -> tuple[str | None, dict | None, str] | None:
+    """动态 id → _parse_dynamic_item 的结果；接口失败（风控/已删除）返回 None。"""
+    try:
+        async with httpx.AsyncClient(timeout=15, headers=_bili_headers()) as client:
+            api = await client.get(
+                "https://api.bilibili.com/x/polymer/web-dynamic/v1/detail",
+                params={"id": dyn_id},
+            )
+        body = api.json() or {}
+        if body.get("code") != 0:
+            logger.warning("动态详情接口 code=%s id=%s", body.get("code"), dyn_id)
+            return None
+        return _parse_dynamic_item((body.get("data") or {}).get("item") or {})
+    except Exception as e:
+        logger.warning("动态详情获取失败 id=%s: %s", dyn_id, e)
+        return None
+
+
+async def _dynamic_bvid(dyn_id: str) -> str | None:
+    """动态 id → BV 号；查到了但没视频的抛 NotAVideoLink（带可转发内容）。"""
+    got = await _dynamic_lookup(dyn_id)
+    if not got:
+        return None
+    bvid, content, label = got
+    if bvid:
+        return bvid
+    raise NotAVideoLink(f"这是{label}，没有视频可解析", content)
+
+
+async def _send_dynamic(event: MessageEvent, content: dict) -> None:
+    """转发文字/图文动态：文字卡片（带引用）+ 前几张图片。"""
+    text = content["text"]
+    shown = content["images"][:_DYNAMIC_MAX_IMAGES]
+    if len(content["images"]) > _DYNAMIC_MAX_IMAGES:
+        text += (
+            f"\n（动态共 {len(content['images'])} 张图，"
+            f"这里只发前 {_DYNAMIC_MAX_IMAGES} 张）"
+        )
+    card = f"📮 {content['label']}\n—————————\n{text}" if text else f"📮 {content['label']}"
+    await send_reply(video_matcher, event, card, plugin_config.reply_chunk_chars)
+    for url in shown:
+        try:
+            await video_matcher.send(MessageSegment.image(url))
+        except Exception:
+            logger.exception("动态图片发送失败 %s", url)
+    await video_matcher.finish()
+
+
 async def _resolve_bvid(url: str) -> str | None:
-    """从 URL 提取视频 ID：BV 号直接取；av 号换 BV；短链（b23.tv）走跳转解析。"""
+    """从 URL 提取视频 ID：BV 号直接取；av 号换 BV；短链（b23.tv）走跳转解析。
+
+    跳到动态页的：带视频的动态（含转发）提取 BV；确定不是视频的抛
+    NotAVideoLink（content 里带可转发的文字/图片，调用方直接发内容）。
+    """
     m = BV_RE.search(url)
     if m:
         return m.group()
@@ -334,6 +479,10 @@ async def _resolve_bvid(url: str) -> str | None:
         bvid = await _aid_to_bvid(m.group(1))
         if bvid:
             return bvid
+    # 动态页直链（t.bilibili.com / opus）：形态已明确，不用走跳转
+    m = DYN_ID_RE.search(url)
+    if m:
+        return await _dynamic_bvid(m.group(1))
     try:
         # 只要跳转后的最终 URL（BV 号在里面）：read_body=False 不读不解码正文，
         # B 站页面「声称 gzip 实际 brotli/zstd」的响应带不动解码，自然炸不到
@@ -348,7 +497,17 @@ async def _resolve_bvid(url: str) -> str | None:
             bvid = await _aid_to_bvid(m.group(1))
             if bvid:
                 return bvid
+        # 短链跳到动态页：带视频的动态取出 BV；纯图文/文字动态带出可转发内容
+        m = DYN_ID_RE.search(final_url)
+        if m:
+            return await _dynamic_bvid(m.group(1))
+        # 直播/番剧/专栏/音频/主页：说明类型，别让用户白等重试
+        for pat, label in _NON_VIDEO_URL_LABELS:
+            if pat.search(final_url):
+                raise NotAVideoLink(f"这是{label}，没有视频可解析")
         return None
+    except NotAVideoLink:
+        raise
     except Exception as e:
         logger.warning("BV 号解析失败 %s: %s", url, e)
         return None
@@ -476,7 +635,14 @@ async def handle_video(event: MessageEvent):
 
     await send_notice(video_matcher, event, "⏳ 正在解析视频，稍等一会儿…")
     is_bili = "b23.tv" in url or "bilibili.com" in url
-    bvid = await _resolve_bvid(url) if is_bili else None
+    try:
+        bvid = await _resolve_bvid(url) if is_bili else None
+    except NotAVideoLink as e:
+        # 查明了不是视频：有文字/图片就直接转发动态内容，否则说明类型
+        if e.content:
+            await _send_dynamic(event, e.content)
+        else:
+            await video_matcher.finish(str(e))
     # 总结按「视频+群」隔离：每个群第一次发送都各自出分析、各自发视频
     scope = f"g{event.group_id}" if isinstance(event, GroupMessageEvent) else f"p{event.user_id}"
     cache_key = f"bili:{bvid}:{scope}" if bvid else f"url:{url}:{scope}"
