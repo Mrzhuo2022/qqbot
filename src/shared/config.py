@@ -55,6 +55,26 @@ class Config(BaseModel):
     chat_rate_per_min: int = 12
     # 每个人每分钟最多触发的 LLM 调用次数（防一个人刷光整群的额度）
     chat_user_rate_per_min: int = 4
+    # 普通网页链接自动抓正文让 AI 总结：仅限知名内容平台（白名单），
+    # 个人域名/杂站不触发。B站视频/转发解析等专门插件不受影响
+    link_parser_enabled: bool = True
+    # 网页总结白名单，域名后缀匹配（含子域名）：zhihu.com 覆盖 zhuanlan.zhihu.com。
+    # 留空 = 不处理任何网页链接（等于关闭）。B站链接分工：视频/动态归 video_parser，
+    # 专栏文章（/read/cv）落到这里抓正文
+    link_parser_whitelist: list[str] = [
+        "zhihu.com",         # 知乎（含专栏）
+        "mp.weixin.qq.com",  # 微信公众号文章
+        "bilibili.com",      # B站专栏文章（视频/动态由 video_parser 接管）
+        "juejin.cn",         # 掘金
+        "csdn.net",          # CSDN
+        "jianshu.com",       # 简书
+        "sspai.com",         # 少数派
+        "36kr.com",          # 36氪
+        "huxiu.com",         # 虎嗅
+        "thepaper.cn",       # 澎湃新闻
+    ]
+    # 总结后随文发出的正文图片张数上限（0 = 不发图）
+    link_parser_max_images: int = 3
     parser_rate_per_min: int = 4
     # 以这些词开头的群消息会触发对话（无需 @），空 = 仅 @ 触发
     chat_wake_words: list[str] = []

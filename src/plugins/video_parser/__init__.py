@@ -61,6 +61,9 @@ CARD_URL_RE = re.compile(r"https?://[^\s\"'\\<>]+")
 # （t 域直连 200 不跳转，所以也要认）
 DYN_ID_RE = re.compile(r"(?:(?:opus|dynamic)/|t\.bilibili\.com/)(\d{8,25})")
 # 明确「不是视频」的 B 站页面形态：识别后直接说明类型，别让用户白等重试
+# 专栏文章例外：文本里的 cv 直链直接让给 link_parser 抓正文（b23 短链跳进
+# 专栏时本插件已拦下，_resolve_bvid 会说明类型）
+_CV_LINK_RE = re.compile(r"/read/cv\d+")
 _NON_VIDEO_URL_LABELS = (
     (re.compile(r"live\.bilibili\.com/(?:h5/)?\d+"), "直播间链接"),
     (re.compile(r"/bangumi/play/(?:ep|ss)\d+"), "番剧/影视链接"),
@@ -74,6 +77,10 @@ def bili_url_from_text(text: str) -> str | None:
     """从文本提取B站目标：完整链接优先，其次裸 BV/av 号、无协议头的 b23 短链（补全成链接）。"""
     url = extract_first_url(text)
     if url and VIDEO_DOMAIN_RE.search(url):
+        # 专栏文章不拦：返回 None 不触发本 matcher（block=True 会挡住后续插件），
+        # 让 link_parser（priority 10）接手抓正文总结。动态/直播/番剧仍在这里说明类型
+        if _CV_LINK_RE.search(url):
+            return None
         return url
     # 非 B站链接的路径里可能碰巧含 BV 样式串，剔除链接再找裸 ID
     scan_text = text.replace(url, " ") if url else text

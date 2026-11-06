@@ -95,8 +95,14 @@ async def safe_fetch(
     """
     if max_bytes is None:
         max_bytes = plugin_config.fetch_max_mb * 1024 * 1024
+    # 声明不收压缩编码：部分 CDN（B站/微信公众号等）谎报 Content-Encoding，
+    # httpx 自动解压时直接炸 zlib 错误。图片等二进制内容本来就不压缩，无副作用
+    merged_headers = dict(headers or {})
+    merged_headers.setdefault("Accept-Encoding", "identity")
+    # raw=True 表示服务器谎报编码、正常解压失败过一次，改拿未解压的原始字节
+    use_raw = False
     async with httpx.AsyncClient(
-        timeout=timeout, headers=headers, follow_redirects=False, transport=_transport
+        timeout=timeout, headers=merged_headers, follow_redirects=False, transport=_transport
     ) as client:
         for _ in range(max_redirects + 1):
             # DNS 解析是阻塞的，丢线程池
@@ -110,7 +116,7 @@ async def safe_fetch(
                 if not read_body:
                     return httpx.Response(
                         resp.status_code,
-                        headers=resp.headers,
+                        headers=_clean_transfer_headers(resp.headers),
                         content=b"",
                         request=resp.request,
                     )
@@ -121,18 +127,34 @@ async def safe_fetch(
                         f"响应体积 {int(content_length)} 字节，超过上限 {max_bytes}"
                     )
                 buf = bytearray()
-                async for chunk in resp.aiter_bytes():
-                    buf += chunk
-                    if len(buf) > max_bytes:
-                        raise PayloadTooLarge(
-                            f"响应体超过 {max_bytes} 字节，已中断下载"
-                        )
+                try:
+                    chunks = resp.aiter_raw() if use_raw else resp.aiter_bytes()
+                    async for chunk in chunks:
+                        buf += chunk
+                        if len(buf) > max_bytes:
+                            raise PayloadTooLarge(
+                                f"响应体超过 {max_bytes} 字节，已中断下载"
+                            )
+                except httpx.DecodingError:
+                    # 服务器无视 Accept-Encoding 还谎报编码，正常解压走不通：
+                    # 重发一次拿原始字节，内容按原样交给调用方（不再抛异常）
+                    use_raw = True
+                    continue
                 # 流已消费，用公开 API 重建一个装好内容的响应，调用方照常
-                # 使用 .text/.content/.headers/.url
+                # 使用 .text/.content/.headers/.url；内容已是最终字节，
+                # 残留的压缩编码/长度头必须清掉，否则再次解压会炸
                 return httpx.Response(
                     resp.status_code,
-                    headers=resp.headers,
+                    headers=_clean_transfer_headers(resp.headers),
                     content=bytes(buf),
                     request=resp.request,
                 )
     raise UnsafeURL("重定向次数过多")
+
+
+def _clean_transfer_headers(headers: httpx.Headers) -> httpx.Headers:
+    """去掉解压相关的传输头：重建的响应体已是最终字节，这些头不再成立。"""
+    cleaned = httpx.Headers(headers)
+    cleaned.pop("content-encoding", None)
+    cleaned.pop("content-length", None)
+    return cleaned
