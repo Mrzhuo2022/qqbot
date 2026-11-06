@@ -9,6 +9,7 @@ QQ 消息 ──► NapCat（登录 QQ 号，翻译成 OneBot 11 API）
          NoneBot2（本项目）
          ├─ admin           管理员命令 /bot status|on|off|clear
          ├─ video_parser    视频链接解析（B站官方API / yt-dlp）→ LLM 摘要
+         ├─ media_parser    小红书/抖音/小黑盒 分享解析（内容 mirror，视频下载发送；小红书/抖音需 cookie，小黑盒免登录走签名 API）
          ├─ chat            @/唤醒词 对话（记忆落盘、群上下文、图片理解）
          ├─ proactive       主动回复：免 @，像群友一样看聊天接话
          ├─ forward_parser  合并转发「聊天记录」→ LLM 总结
@@ -207,10 +208,23 @@ Jev 可以不联网、不花 key——本地跑开源的 [laya](https://huggingf
 video_parser 视频 / forward_parser 转发解析 / chat_analyze 群聊分析 / quote 一言 /
 news 新闻 / group_digest 晚报 / remind 提醒 / rank 排行 / weather 天气 /
 translate 翻译 / image_gen 生图 / proactive 主动回复。
-其中 link_parser 只处理 `link_parser_whitelist` 白名单内的知名平台
-（知乎/微信公众号/B站专栏等，域名后缀匹配），个人域名、杂站不触发；
-总结会附带正文前几张配图（`link_parser_max_images`，0 = 不发图）。
+其中 link_parser 只处理 `link_parser_whitelist` 白名单内的重点平台
+（默认：知乎/微信公众号/B站专栏，域名后缀匹配，想加其他网站自己补域名），
+个人域名、杂站、长尾站不触发。命中后**先发原文内容**（标题/作者 + 正文
+截断 + 配图，`link_parser_max_images` 默认 3 张，0 = 不发图），**AI 总结
+放最后**；微信公众号例外——只发总结不贴原文不发图（长文粘贴刷屏）。
+知乎网页端有浏览器 JS 质询，无登录态一律 403——需要在 `.env` 配置
+`zhihu_cookie`（从已登录浏览器复制 Cookie 请求头整串）才能解析知乎，
+未配置时群里会提示原因。
 全局开关 `link_parser_enabled` 默认开启。
+
+media_parser 处理小红书/抖音/小黑盒分享链接，**直接发内容本身**（动态类
+内容短，不做 AI 总结）：图文笔记发文字+图，视频笔记/抖音视频照 B站视频
+方式下载后作为视频消息发送。小红书/抖音需登录态（免 cookie 路线已失效）：
+`.env` 配 `xhs_cookie` / `douyin_cookie`（填法同 zhihu_cookie），未配置时
+群里提示原因。小黑盒免 cookie：SPA 页面无 SSR，直接调官方 App 的
+`link/tree` 接口（hkey 签名从网页版 JS 逆向实现），短时间高频请求会触发
+其验证码风控，属正常限流行为。
 
 ## 快速开始
 

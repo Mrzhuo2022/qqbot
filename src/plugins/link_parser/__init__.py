@@ -10,6 +10,7 @@ link_parser_whitelist 里，直接不触发，避免群里发啥都来一句「�
 
 import asyncio
 import html as html_lib
+import json
 import logging
 import re
 from urllib.parse import urljoin, urlparse
@@ -42,19 +43,28 @@ logger = logging.getLogger("link_parser")
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
 
 IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.I)
-# 懒加载站真实地址多在 data-src/data-original，src 常是 loading 占位图
-IMG_ATTR_RE = re.compile(r"""\b(data-src|data-original|src)\s*=\s*["']([^"']+)["']""", re.I)
+# 懒加载站真实地址多在 data-src/data-original/data-actualsrc，src 常是 loading 占位图
+IMG_ATTR_RE = re.compile(
+    r"""\b(data-actualsrc|data-src|data-original|src)\s*=\s*["']([^"']+)["']""", re.I
+)
 # 图标/头像/二维码/内联数据/占位图不当作文章配图（gif 动图是真配图，不跳过）
 IMG_SKIP_RE = re.compile(
     r"data:|logo|icon|sprite|blank|loading|placeholder|avatar|qrcode|\.svg", re.I
 )
 
-ARTICLE_MIN_CHARS = 200
+# 知乎：页面数据全在 js-initialData script JSON 里（entities.answers/articles）
+ZHIHU_HOST_RE = re.compile(r"^(?:[\w-]+\.)*zhihu\.com$")
+INITIAL_DATA_RE = re.compile(r'id="js-initialData"[^>]*>(.*?)</script>', re.S)
+ANSWER_ID_RE = re.compile(r"/answer/(\d+)")
+ZHUANLAN_ID_RE = re.compile(r"zhuanlan\.zhihu\.com/p/(\d+)")
+
+ARTICLE_MIN_CHARS = 50
 MAX_TEXT_CHARS = 2_000_000
 MAX_PROMPT_CHARS = 12_000
+# 原文正文直接发群的截断长度（内容优先，总结在后）
+CONTENT_MAX_CHARS = 2500
 
 _limiter = RateLimiter(plugin_config.parser_rate_per_min, 60)
-# 缓存值是 (总结文本, 配图URL) 二元组
 _summary_cache = TTLCache(maxsize=256, ttl=1800)
 
 SUMMARY_SYSTEM = (
@@ -69,16 +79,18 @@ SUSPECT_SYSTEM_EXTRA = (
 )
 
 
+def _domain_match(host: str, domains: list[str]) -> bool:
+    """域名后缀匹配：zhuanlan.zhihu.com 命中 zhihu.com。"""
+    host = (host or "").lower()
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
 def _host_whitelisted(url: str) -> bool:
     """域名后缀匹配白名单：zhuanlan.zhihu.com 命中 zhihu.com。
 
     白名单留空 = 不处理任何网页链接（等于关闭）。
     """
-    host = (urlparse(url).hostname or "").lower()
-    return any(
-        host == w or host.endswith("." + w)
-        for w in plugin_config.link_parser_whitelist
-    )
+    return _domain_match(urlparse(url).hostname, plugin_config.link_parser_whitelist)
 
 
 def _extract_images(page: str, base_url: str) -> list[str]:
@@ -91,8 +103,8 @@ def _extract_images(page: str, base_url: str) -> list[str]:
         attrs = IMG_ATTR_RE.findall(tag)
         if not attrs:
             continue
-        # 属性命中优先级 data-src > data-original > src，跟在 HTML 里出现顺序无关
-        priority = {"data-src": 0, "data-original": 1, "src": 2}
+        # 属性命中优先级 data-actualsrc > data-src > data-original > src，与出现顺序无关
+        priority = {"data-actualsrc": 0, "data-src": 1, "data-original": 2, "src": 3}
         src = sorted(attrs, key=lambda a: priority.get(a[0], 9))[0][1].strip()
         if not src or IMG_SKIP_RE.search(src):
             continue
@@ -103,6 +115,53 @@ def _extract_images(page: str, base_url: str) -> list[str]:
         if len(urls) >= limit:
             break
     return urls
+
+
+def _strip_html(html: str) -> str:
+    """剥标签取纯文本：块级元素转行，压掉多余空行。"""
+    html = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", "", html, flags=re.S | re.I)
+    html = re.sub(r"<br\s*/?>", "\n", html, flags=re.I)
+    html = re.sub(r"</p\s*>", "\n\n", html, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", html)
+    text = html_lib.unescape(text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _parse_zhihu(page: str, url: str) -> tuple[str, str | None, str, list[str]] | None:
+    """从知乎页面 js-initialData 挖结构化内容（比 trafilatura 全、带作者）。
+
+    返回 (标题, 作者, 正文, 配图)，页面结构不符或目标回答/文章不在时返回 None，
+    调用方回落通用提取。
+    """
+    m = INITIAL_DATA_RE.search(page)
+    if not m:
+        return None
+    try:
+        ents = json.loads(m.group(1)).get("initialState", {}).get("entities", {})
+        content_html = title = author = None
+        am = ANSWER_ID_RE.search(url)
+        a = ents.get("answers", {}).get(am.group(1)) if am else None
+        if a:
+            content_html = a.get("content") or ""
+            author = (a.get("author") or {}).get("name")
+            title = (a.get("question") or {}).get("title")
+        else:
+            pm = ZHUANLAN_ID_RE.search(url)
+            art = ents.get("articles", {}).get(pm.group(1)) if pm else None
+            if art:
+                content_html = art.get("content") or ""
+                author = (art.get("author") or {}).get("name")
+                title = art.get("title")
+        if not content_html:
+            return None
+        clean_title = (
+            clip(sanitize_bot_output((title or "").strip()), 100) or "未命名文章"
+        )
+        clean_author = sanitize_bot_output((author or "").strip()) or None
+        return clean_title, clean_author, _strip_html(content_html), _extract_images(content_html, url)
+    except Exception:
+        logger.exception("知乎 initialData 解析失败：%s", url)
+        return None
 
 
 async def _has_link(event: MessageEvent) -> bool:
@@ -134,13 +193,18 @@ async def _send_images(images: list[str]) -> None:
             return
 
 
-async def _deliver(event: MessageEvent, reply: str, images: list[str]) -> None:
-    await send_reply(link_matcher, event, reply, plugin_config.reply_chunk_chars)
-    await _send_images(images)
+def _parse_page(
+    page: str, url: str, is_zhihu: bool
+) -> tuple[str, str | None, list[str], str | None]:
+    """同步解析页面：标题 + 作者 + 配图 + 正文。CPU 密集，调用方丢线程池跑。
 
-
-def _parse_page(page: str, url: str) -> tuple[str, list[str], str | None]:
-    """同步解析页面：标题 + 配图 + 正文。CPU 密集，调用方丢线程池跑。"""
+    知乎优先走 initialData 结构化解析，失败回落 trafilatura 通用提取。
+    """
+    if is_zhihu:
+        parsed = _parse_zhihu(page, url)
+        if parsed:
+            title, author, text, images = parsed
+            return title, author, images, text
     title_m = TITLE_RE.search(page)
     title = clip(
         sanitize_bot_output(
@@ -150,7 +214,7 @@ def _parse_page(page: str, url: str) -> tuple[str, list[str], str | None]:
     ) or "未命名文章"
     images = _extract_images(page, url)
     text = trafilatura.extract(page, include_comments=False, favor_recall=True)
-    return title, images, text
+    return title, None, images, text
 
 
 @link_matcher.handle()
@@ -159,9 +223,16 @@ async def handle_link(event: MessageEvent):
     if not url:
         return
     # 缓存命中不占限流额度：重复发的链接零成本秒回，限流只管真要调 LLM 的
+    # 缓存值是 (内容产出, 配图, 总结产出|None) 三元组；summary_only 平台的
+    # 内容产出是空串，命中时别把空消息发出去
     cached = _summary_cache.get(url)
     if cached is not None:
-        await _deliver(event, *cached)
+        content_reply, images, summary_reply = cached
+        if content_reply:
+            await send_reply(link_matcher, event, content_reply, plugin_config.reply_chunk_chars)
+            await _send_images(images)
+        if summary_reply:
+            await send_reply(link_matcher, event, summary_reply, plugin_config.reply_chunk_chars)
         await link_matcher.finish()
 
     if not _limiter.check(
@@ -171,8 +242,27 @@ async def handle_link(event: MessageEvent):
         await link_matcher.finish()
 
     await send_notice(link_matcher, event, "⏳ 正在看看这个链接的内容…")
+
+    host = urlparse(url).hostname or ""
+    is_zhihu = bool(ZHIHU_HOST_RE.match(host))
+    headers = UA_HEADERS
+    if is_zhihu:
+        # 知乎网页端有浏览器 JS 质询（zse-ck），无登录态一律 403
+        if not plugin_config.zhihu_cookie:
+            await send_reply(
+                link_matcher, event,
+                "⚠️ 知乎需要登录态才能抓取内容，请管理员在 .env 配置 zhihu_cookie",
+                plugin_config.reply_chunk_chars,
+            )
+            await link_matcher.finish()
+        headers = {
+            **UA_HEADERS,
+            "Cookie": plugin_config.zhihu_cookie,
+            "Referer": "https://www.zhihu.com/",
+        }
+
     try:
-        resp = await safe_fetch(url, headers=UA_HEADERS, timeout=20)
+        resp = await safe_fetch(url, headers=headers, timeout=20)
         content_type = resp.headers.get("content-type", "").lower()
         # 明确的二进制/媒体类型才跳过；xhtml/xml、text/*、缺 content-type 都试着解析
         if content_type and not (
@@ -199,8 +289,8 @@ async def handle_link(event: MessageEvent):
         )
         await link_matcher.finish()
 
-    # 标题/配图/正文提取都是 CPU 密集的同步操作，一起丢线程池跑
-    title, images, text = await asyncio.to_thread(_parse_page, page, url)
+    # 标题/作者/配图/正文提取都是 CPU 密集的同步操作，一起丢线程池跑
+    title, author, images, text = await asyncio.to_thread(_parse_page, page, url, is_zhihu)
     if not text or len(text) < ARTICLE_MIN_CHARS:
         logger.info("正文提取失败或太短，跳过：%s", url)
         await send_reply(
@@ -210,34 +300,43 @@ async def handle_link(event: MessageEvent):
         )
         await link_matcher.finish()
 
+    # 输出形态按平台分流：公众号等长文只发总结（原文粘贴刷屏且排版全丢），
+    # 其余平台先发原文内容+配图，AI 总结放最后
+    summary_only = _domain_match(host, plugin_config.link_parser_summary_only)
+    content_reply = ""
+    if not summary_only:
+        shown = text[:CONTENT_MAX_CHARS]
+        more = "\n\n…（原文较长，已截断）" if len(text) > CONTENT_MAX_CHARS else ""
+        content_reply = (
+            f"📄 {title}\n"
+            + (f"👤 {author}\n" if author else "")
+            + f"—————————\n{shown}{more}"
+        )
+        await send_reply(link_matcher, event, content_reply, plugin_config.reply_chunk_chars)
+        await _send_images(images)
+
+    # AI 总结；内容已是主体产出，总结失败静默记日志即可
+    if not llm.llm_ready():
+        _summary_cache.set(url, (content_reply, [] if summary_only else images, None))
+        await link_matcher.finish()
+
     suspect = plugin_config.enable_injection_guard and looks_suspicious(text)
     system = SUMMARY_SYSTEM + (SUSPECT_SYSTEM_EXTRA if suspect else "")
     notice = "\n\n⚠️ 原文中检测到疑似注入指令，已按防护模式总结" if suspect else ""
-
-    if not llm.llm_ready():
-        reply = clip(
-            sanitize_bot_output(f"📄 {title}\n（AI 总结还没配置，附正文开头）\n\n{text[:500]}"),
-            plugin_config.reply_max_chars,
-        )
-        _summary_cache.set(url, (reply, images))
-        await _deliver(event, reply, images)
-        await link_matcher.finish()
 
     try:
         summary = await llm.llm_chat(system, wrap_untrusted(text, MAX_PROMPT_CHARS))
     except Exception:
         logger.exception("文章总结生成失败")
-        await send_reply(
-            link_matcher, event,
-            f"📄 {title}\n链接抓到了，但 AI 总结出错了",
-            plugin_config.reply_chunk_chars,
-        )
+        _summary_cache.set(url, (content_reply, [] if summary_only else images, None))
         await link_matcher.finish()
 
-    reply = clip(
-        sanitize_bot_output(f"📄 {title}\n—————————\n{summary}{notice}"),
+    summary_reply = clip(
+        sanitize_bot_output(f"💡 AI 总结\n—————————\n{summary}{notice}"),
         plugin_config.reply_max_chars,
     )
-    _summary_cache.set(url, (reply, images))
-    await _deliver(event, reply, images)
+    _summary_cache.set(
+        url, (content_reply, [] if summary_only else images, summary_reply)
+    )
+    await send_reply(link_matcher, event, summary_reply, plugin_config.reply_chunk_chars)
     await link_matcher.finish()

@@ -59,22 +59,19 @@ class Config(BaseModel):
     # 个人域名/杂站不触发。B站视频/转发解析等专门插件不受影响
     link_parser_enabled: bool = True
     # 网页总结白名单，域名后缀匹配（含子域名）：zhihu.com 覆盖 zhuanlan.zhihu.com。
+    # 只收重点平台，长尾站没用没人发就不收了；想加往列表里补域名即可。
     # 留空 = 不处理任何网页链接（等于关闭）。B站链接分工：视频/动态归 video_parser，
     # 专栏文章（/read/cv）落到这里抓正文
     link_parser_whitelist: list[str] = [
-        "zhihu.com",         # 知乎（含专栏）
-        "mp.weixin.qq.com",  # 微信公众号文章
+        "zhihu.com",         # 知乎（回答/专栏，需 zhihu_cookie）
+        "mp.weixin.qq.com",  # 微信公众号文章（只发 AI 总结）
         "bilibili.com",      # B站专栏文章（视频/动态由 video_parser 接管）
-        "juejin.cn",         # 掘金
-        "csdn.net",          # CSDN
-        "jianshu.com",       # 简书
-        "sspai.com",         # 少数派
-        "36kr.com",          # 36氪
-        "huxiu.com",         # 虎嗅
-        "thepaper.cn",       # 澎湃新闻
     ]
     # 总结后随文发出的正文图片张数上限（0 = 不发图）
     link_parser_max_images: int = 3
+    # 这些白名单域名只发 AI 总结：不贴原文、不发配图（公众号长文样式复杂，
+    # 原文粘贴会刷屏且排版全丢，总结合适；其他平台默认先发原文再总结）
+    link_parser_summary_only: list[str] = ["mp.weixin.qq.com"]
     parser_rate_per_min: int = 4
     # 以这些词开头的群消息会触发对话（无需 @），空 = 仅 @ 触发
     chat_wake_words: list[str] = []
@@ -84,6 +81,14 @@ class Config(BaseModel):
     image_max_mb: int = 10
     # B站接口 cookie：遇到风控（-352）时填登录 cookie 可缓解
     bili_cookie: str = ""
+    # 知乎 cookie：知乎网页端有浏览器 JS 质询（zse-ck），无登录态一律 403。
+    # 从已登录的浏览器复制 Cookie 请求头整串填进来（浏览器 F12 → Network →
+    # 任意 zhihu.com 请求 → Request Headers → Cookie），不填则知乎链接只提示无法抓取
+    zhihu_cookie: str = ""
+    # 小红书 cookie：网页版需登录态（免 cookie 路线已失效），不填只提示无法抓取
+    xhs_cookie: str = ""
+    # 抖音 cookie：分享页需登录态，不填只提示无法抓取
+    douyin_cookie: str = ""
 
     # SSRF 防护额外放行的网段。挂代理（Clash 等开启 fake-IP DNS）时所有域名
     # 会解析成 198.18.0.0/15（由代理接管转发，不是真实内网），需放行才能抓公网；

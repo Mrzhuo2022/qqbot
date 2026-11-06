@@ -81,6 +81,9 @@ def bili_url_from_text(text: str) -> str | None:
         # 让 link_parser（priority 10）接手抓正文总结。动态/直播/番剧仍在这里说明类型
         if _CV_LINK_RE.search(url):
             return None
+        # 抖音让位给 media_parser（带 cookie 的专项解析，yt-dlp 抖音源不稳）
+        if re.search(r"douyin\.com|iesdouyin\.com", url):
+            return None
         return url
     # 非 B站链接的路径里可能碰巧含 BV 样式串，剔除链接再找裸 ID
     scan_text = text.replace(url, " ") if url else text
@@ -379,6 +382,13 @@ _DYNAMIC_MAX_IMAGES = 3
 _BILI_IMG_HOSTS = ("hdslb.com", "bilibili.com")
 
 
+def _rich_nodes_text(nodes) -> str:
+    """rich_text_nodes 数组拼纯文本（desc/summary 旧版富文本）。"""
+    if not isinstance(nodes, list):
+        return ""
+    return "".join((n.get("text") or "") for n in nodes).strip()
+
+
 def _parse_dynamic_item(item: dict) -> tuple[str | None, dict | None, str]:
     """动态详情 item → (BV号或None, 可转发内容或None, "某某的XX动态")。
 
@@ -395,6 +405,12 @@ def _parse_dynamic_item(item: dict) -> tuple[str | None, dict | None, str]:
     label_type = ""
     texts: list[str] = []
     images: list[str] = []
+
+    def _add_image(src: str) -> None:
+        host = urlparse(src).hostname or ""
+        if src and host.endswith(_BILI_IMG_HOSTS):
+            images.append(src)
+
     for cur in chain:
         dyn = ((cur.get("modules") or {}).get("module_dynamic")) or {}
         major = dyn.get("major") or {}
@@ -404,23 +420,41 @@ def _parse_dynamic_item(item: dict) -> tuple[str | None, dict | None, str]:
             return bvid, None, f"{author}的{kind}"
         if not label_type and major.get("type") in _DYNAMIC_TYPE_LABELS:
             label_type = major["type"]
-        # 文字：desc 是旧版正文，opus 是新版图文（title+summary）
+        # 文字：desc 是旧版正文，opus 是新版图文（title+summary）；
+        # 新版长图文把正文搬进了 opus.modules（Paragraph 模块），summary 常为空
         opus = major.get("opus") or {}
-        for piece in (
-            (opus.get("title") or "").strip(),
-            ((opus.get("summary") or {}).get("text") or "").strip(),
-            ((dyn.get("desc") or {}).get("text") or "").strip(),
-        ):
-            if piece:
-                texts.append(piece)
+        module_texts: list[str] = []
+        module_images: list[str] = []
+        for mod in opus.get("modules") or []:
+            mtype = (mod.get("module_type") or "").upper()
+            if "PARAGRAPH" in mtype or mtype.endswith("TEXT"):
+                mc = mod.get("module_content") or {}
+                piece = (mc.get("text") or "").strip() or _rich_nodes_text(mc.get("rich_text_nodes"))
+                if piece:
+                    module_texts.append(piece)
+            elif "IMAGE" in mtype:
+                for img in (mod.get("module_images") or {}).get("images") or []:
+                    module_images.append((img or {}).get("url") or (img or {}).get("src") or "")
+        if module_texts:
+            # modules 里有全文就不再取 summary（过渡期 summary 只是拼接预览，会重复）
+            texts.append((opus.get("title") or "").strip())
+            texts.extend(module_texts)
+        else:
+            for piece in (
+                (opus.get("title") or "").strip(),
+                (opus.get("summary") or {}).get("text") or _rich_nodes_text((opus.get("summary") or {}).get("rich_text_nodes")),
+                (dyn.get("desc") or {}).get("text") or _rich_nodes_text((dyn.get("desc") or {}).get("rich_text_nodes")),
+            ):
+                if piece and piece.strip():
+                    texts.append(piece.strip())
+        for src in module_images:
+            _add_image(src)
         for pic in (major.get("draw") or {}).get("items") or []:
-            src = (pic or {}).get("src") or ""
-            host = urlparse(src).hostname or ""
-            if host.endswith(_BILI_IMG_HOSTS):
-                images.append(src)
+            _add_image((pic or {}).get("src") or "")
     label = f"{author}的{_DYNAMIC_TYPE_LABELS.get(label_type, '动态')}"
     if texts or images:
-        return None, {"author": author, "label": label, "text": "\n".join(texts), "images": images}, label
+        # 保序去重：转发链里同一句话可能 desc/opus 各来一份
+        return None, {"author": author, "label": label, "text": "\n".join(t for t in dict.fromkeys(texts) if t), "images": images}, label
     return None, None, label
 
 
@@ -640,7 +674,7 @@ async def handle_video(event: MessageEvent):
         logger.info("video_parser 触发限流，跳过 %s", url)
         await video_matcher.finish()
 
-    await send_notice(video_matcher, event, "⏳ 正在解析视频，稍等一会儿…")
+    await send_notice(video_matcher, event, "⏳ 正在解析链接内容，稍等一会儿…")
     is_bili = "b23.tv" in url or "bilibili.com" in url
     try:
         bvid = await _resolve_bvid(url) if is_bili else None
@@ -659,8 +693,8 @@ async def handle_video(event: MessageEvent):
         await send_reply(
             video_matcher, event, cached, plugin_config.reply_chunk_chars
         )
-        # 开了文件缓存则本群重复发送直接回缓存视频
-        if bvid and plugin_config.bili_video_download and plugin_config.bili_video_keep:
+        # 摘要已有缓存，视频照发（文件缓存命中秒回，成本低）
+        if bvid and plugin_config.bili_video_download:
             await _send_video(event, url, bvid)
         await video_matcher.finish()
 
@@ -676,7 +710,7 @@ async def handle_video(event: MessageEvent):
             )
     except Exception as e:
         logger.warning("视频解析失败 %s: %s", url, e)
-        await video_matcher.finish("视频解析失败了，稍后再试试吧")
+        await video_matcher.finish("链接解析失败了，稍后再试试吧")
 
     info_text = info["info_text"]
     notice = ""

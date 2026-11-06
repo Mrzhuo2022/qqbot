@@ -99,16 +99,26 @@ async def safe_fetch(
     # httpx 自动解压时直接炸 zlib 错误。图片等二进制内容本来就不压缩，无副作用
     merged_headers = dict(headers or {})
     merged_headers.setdefault("Accept-Encoding", "identity")
+    # 凭据只在原始域使用：跨域重定向剥离 Cookie/Authorization/Referer，
+    # 防止带站 A 的登录态去访问重定向后的站 B
+    origin_host = urlparse(url).hostname
     # raw=True 表示服务器谎报编码、正常解压失败过一次，改拿未解压的原始字节
     use_raw = False
     async with httpx.AsyncClient(
-        timeout=timeout, headers=merged_headers, follow_redirects=False, transport=_transport
+        timeout=timeout, follow_redirects=False, transport=_transport
     ) as client:
         for _ in range(max_redirects + 1):
             # DNS 解析是阻塞的，丢线程池
             if not await asyncio.to_thread(url_allowed, url):
                 raise UnsafeURL(f"拒绝抓取非公网地址：{url[:80]}")
-            async with client.stream("GET", url) as resp:
+            hop_headers = merged_headers
+            if urlparse(url).hostname != origin_host:
+                hop_headers = {
+                    k: v
+                    for k, v in merged_headers.items()
+                    if k.lower() not in ("cookie", "authorization", "referer")
+                }
+            async with client.stream("GET", url, headers=hop_headers) as resp:
                 if resp.is_redirect and resp.has_redirect_location:
                     location = resp.headers.get("location", "")
                     url = str(resp.url.join(location))
