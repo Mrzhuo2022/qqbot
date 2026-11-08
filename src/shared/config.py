@@ -140,6 +140,16 @@ class Config(BaseModel):
     # 用 LLM 生成一句早安导语
     daily_news_intro: bool = True
 
+    # ── AI 热点（/ainews：aihot.news 热点 Top10 + 每日定时推送 AI 日报）──
+    # 日报推送时间 HH:MM，留空关闭定时（/ainews 命令仍可用）
+    ainews_time: str = "09:00"
+    # 推送目标群号，留空则跟随 group_whitelist
+    ainews_groups: list[int] = []
+    # 推送目标个人 QQ 号（私聊推送），和群号可同时配
+    ainews_users: list[int] = []
+    # aihot.news 站点地址（接口是 /api/v1/hot-topics 和 /api/v1/dailies/latest）
+    ainews_api: str = "https://aihot.news"
+
     # ── 群聊晚报（每晚定时总结当天群聊推送）──
     # 生成时间 HH:MM，留空关闭定时（/digest 命令仍可用）
     digest_time: str = "22:30"

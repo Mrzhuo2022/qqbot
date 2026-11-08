@@ -33,6 +33,7 @@ PLUGIN_NAMES = {
     "chat_analyze": "群聊分析",
     "quote": "一言",
     "news": "新闻",
+    "ainews": "AI热点",
     "group_digest": "晚报",
     "remind": "提醒",
     "rank": "排行",
@@ -48,6 +49,7 @@ PLUGIN_ALIASES.update({
     "水群": "rank", "排行榜": "rank", "画图": "image_gen", "画画": "image_gen",
     "主动": "proactive", "主动发言": "proactive", "分析": "chat_analyze",
     "jev": "chat_analyze", "一言bot": "quote",
+    "热点": "ainews", "ai新闻": "ainews", "日报": "ainews",
 })
 
 
@@ -89,6 +91,8 @@ async def handle_bot(event: MessageEvent):
         schedules = []
         if plugin_config.daily_news_time.strip():
             schedules.append(f"新闻 {plugin_config.daily_news_time}")
+        if plugin_config.ainews_time.strip():
+            schedules.append(f"AI热点 {plugin_config.ainews_time}")
         if plugin_config.digest_time.strip():
             schedules.append(f"晚报 {plugin_config.digest_time}")
         reminders = get_setting("reminders", [])

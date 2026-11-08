@@ -19,6 +19,7 @@ HELP_TEXT = (
     "/forget —— 删掉我记住的你的信息\n"
     "/jev [N] /分析 —— 分析最近群聊（默认 1 条，/jev 5 看整体）\n"
     "/news —— 今日 60 秒新闻\n"
+    "/ainews /AI热点 —— AI 热点 Top10（日报 看今日日报）\n"
     "/quote /一言 —— 随机一句话\n"
     "/digest /晚报 —— 预览今晚的群聊晚报\n"
     "/remind 30min 事 —— 定时提醒（list 查看 / cancel 编号 取消）\n"
@@ -34,7 +35,7 @@ ADMIN_TEXT = (
     "/bot clear [all] —— 清会话记忆\n"
     "/bot off|on <功能> —— 群级开关（如 /bot off 聊天）\n"
     "/bot memory|forget [QQ] —— 查/删长期记忆\n"
-    "/news push · /digest push —— 立即推送"
+    "/news push · /ainews push · /digest push —— 立即推送"
 )
 
 

@@ -40,6 +40,8 @@ QQ 消息 ──► NapCat（登录 QQ 号，翻译成 OneBot 11 API）
 | @机器人 /jev 5                 | 分析最近 5 条群聊整体（冲突风险/气氛/主题/该不该插话），条数上限 40                                                            |
 | @机器人 /news                  | 手动查看今日新闻（任意人会话内可见）                                                                                           |
 | @机器人 /news push             | 管理员立即向所有目标群推送新闻                                                                                                 |
+| @机器人 /ainews                | AI 热点 Top10（`/AI热点` 同义；`/ainews 日报` 手动看今日日报）                                                                 |
+| @机器人 /ainews push           | 管理员立即向所有目标群推送 AI 日报                                                                                             |
 | @机器人 /quote                 | 随机一句「一言」（hi.logacg.com，官方源兜底；`/一言` 同义）                                                                  |
 | @机器人 /digest                | 预览本群今日「群聊晚报」（`/晚报` 同义）；`/digest push` 管理员立即推送所有目标群                                          |
 | @机器人 /remind 30min 拿快递   | 定时提醒，到点在原地 @ 你（`/提醒` 同义；`list` 查看、`cancel 编号` 取消）                                               |
@@ -109,6 +111,19 @@ bot 不需要 @、不需要唤醒词，像普通群友一样看群聊、接话�
 群级开关：`/bot off 新闻`，该群的定时推送和 `/news` 命令都停用。
 
 ⚠️ 默认新闻源是社区免费接口（第三方），不稳定属正常——挂了换源或等镜像恢复。
+
+## AI 热点与日报
+
+`/ainews`（`/AI热点` 同义）实时抓取 [aihot.news](https://aihot.news) 的
+AI 热点榜 Top 10（公共接口，匿名可用，本地缓存 10 分钟）；
+`/ainews 日报` 手动看今日 AI 日报。
+
+每天 `ainews_time`（默认 09:00）自动把 aihot.news 当日 AI 日报推送到目标群
+（`ainews_groups`，留空跟随 `group_whitelist`）和指定个人 QQ 号
+（`ainews_users`，私聊推送；两类目标可同时配，都空则不推）。日报由源站
+每天 08:00（北京时间）生成，推送时间别配得比它早。按日报日期去重（落盘），
+重启不会重复推；定时推送全军覆没时每 30 分钟自动重试、最多 3 次。
+群级开关：`/bot off AI热点`，该群的定时推送和 `/ainews` 命令都停用。
 
 ## 群聊晚报
 
@@ -310,6 +325,8 @@ NapCat 连上后（NoneBot 日志出现 WebSocket 连接），在群里 @它 说
 - **限群**：`group_whitelist` 填群号；**限流**：`chat_rate_per_min` / `parser_rate_per_min`。
 - **B站风控**：遇到 -352 报错时，`bili_cookie` 填入网页版登录 cookie。
 - **定时新闻**：`daily_news_time` 改推送时间（留空关闭），`daily_news_groups` 指定推送群。
+- **AI 热点**：`ainews_time` 改日报推送时间（留空关闭），`ainews_groups` 指定推送群，
+  `ainews_users` 指定私聊推送的 QQ 号，`ainews_api` 换 aihot.news 站点地址（一般不用动）。
 - **群聊晚报**：`digest_time` 改出报时间（留空关闭），`digest_groups` 指定推送群，
   `digest_min_messages` 调安静群门槛。
 - **主动回复**：`proactive_enabled` 总开关，`proactive_chance` 评估概率，
