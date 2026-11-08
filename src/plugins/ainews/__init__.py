@@ -69,20 +69,26 @@ async def _fetch_json(path: str) -> dict | None:
         return None
 
 
-def _extract_hot(payload: dict) -> list[str] | None:
-    """hot-topics 返回 {items: [{rank, title, ...}]}，只取前 10 条标题。"""
+def _extract_hot(payload: dict) -> list[tuple[str, str]] | None:
+    """hot-topics 返回 {items: [{rank, title, links, ...}]}，取前 10 条 (标题, 链接)。
+
+    链接优先原文（links.original），缺失退回 aihot 站内页（links.aihot）。
+    """
     raw = payload.get("items")
     if not isinstance(raw, list):
         return None
-    titles: list[str] = []
+    items: list[tuple[str, str]] = []
     for x in raw:
         if isinstance(x, dict):
-            text = str(x.get("title", "")).strip()
-            if text:
-                titles.append(text)
-        if len(titles) >= 10:
+            title = str(x.get("title", "")).strip()
+            if not title:
+                continue
+            links = x.get("links") if isinstance(x.get("links"), dict) else {}
+            url = str(links.get("original") or links.get("aihot") or "").strip()
+            items.append((title, url))
+        if len(items) >= 10:
             break
-    return titles or None
+    return items or None
 
 
 def _extract_daily(payload: dict) -> dict | None:
@@ -93,12 +99,13 @@ def _extract_daily(payload: dict) -> dict | None:
     return report
 
 
-def _fmt_hot(items: list[str], now: dt.datetime | None = None) -> str:
+def _fmt_hot(items: list[tuple[str, str]], now: dt.datetime | None = None) -> str:
     ts = (now or _now_cn()).strftime("%m-%d %H:%M")
-    lines = [
-        f"🔥 AI 热点 Top {len(items)} · {ts}",
-        *(f"{i}. {t}" for i, t in enumerate(items, 1)),
-    ]
+    lines = [f"🔥 AI 热点 Top {len(items)} · {ts}", ""]
+    for i, (title, url) in enumerate(items, 1):
+        lines.append(f"{i}. {title}")
+        if url:
+            lines.append(url)
     return clip(sanitize_bot_output("\n".join(lines)), plugin_config.reply_max_chars)
 
 

@@ -62,7 +62,20 @@ def test_extract_hot_caps_at_10():
 
 def test_extract_hot_skips_empty_titles():
     payload = {"items": [{"url": "https://x"}, {"title": "有效"}, {"title": "  "}]}
-    assert _extract_hot(payload) == ["有效"]
+    assert _extract_hot(payload) == [("有效", "")]
+
+
+def test_extract_hot_link_preference():
+    payload = {"items": [
+        {"title": "A", "links": {"original": "https://o", "aihot": "https://a"}},
+        {"title": "B", "links": {"aihot": "https://a2"}},
+        {"title": "C", "links": {}},
+        {"title": "D"},
+    ]}
+    # 链接优先原文 original，缺失退回 aihot 站内页，都没有就空串
+    assert _extract_hot(payload) == [
+        ("A", "https://o"), ("B", "https://a2"), ("C", ""), ("D", ""),
+    ]
 
 
 def test_extract_hot_rejects_bad_payload():
@@ -88,9 +101,13 @@ def test_extract_daily_rejects_bad_payload():
 def test_fmt_hot_numbered():
     now = dt.datetime(2026, 11, 8, 9, 5, tzinfo=an.CN_TZ)
     text = _fmt_hot(_extract_hot(HOT_PAYLOAD), now=now)
-    assert "🔥 AI 热点 Top 3 · 11-08 09:05" in text
-    assert "1. Anthropic 拟感恩节前 IPO，估值预期下调" in text
+    lines = text.split("\n")
+    assert lines[0] == "🔥 AI 热点 Top 3 · 11-08 09:05"
+    assert lines[1] == ""  # 标题行下空一行
+    assert "1. Anthropic 拟感恩节前 IPO，估值预期下调\nhttps://example.com/1" in text
     assert "2. OpenAI 110亿美元首笔融资到账" in text
+    # 没有 links 的条目（第 2、3 条）不带链接行
+    assert text.count("https://") == 1
     # 原始 JSON 字段（sourceNames/links）不会带进输出
     assert "rohanpaul_ai" not in text
 
