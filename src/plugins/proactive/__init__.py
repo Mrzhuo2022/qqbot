@@ -144,7 +144,7 @@ async def proactive_speak(
     text = _pick_reply(raw)
     if text is None:
         return None, "skip"
-    # 语音模式：转成语音发送；合成或发送失败都回落文字
+    # 语音模式：转成语音发送；语音挂不了引用段，裸语音发出
     as_voice = False
     if tts.voice_reply_on(event.group_id):
         speech = tts.speech_text(text)
@@ -157,7 +157,7 @@ async def proactive_speak(
             "send_group_msg",
             group_id=event.group_id,
             message=(
-                MessageSegment.reply(event.message_id) + MessageSegment.record(audio)
+                MessageSegment.record(audio)
                 if as_voice
                 else MessageSegment.reply(event.message_id) + text
             ),

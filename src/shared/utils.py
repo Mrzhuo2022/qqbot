@@ -157,6 +157,7 @@ async def send_reply(
     单点兜住「昵称里藏 [CQ:at,qq=all]」这类注入。净化幂等，重复过无副作用。
     语音模式：本群开了语音回复（/bot on 语音）时，先发一条语音（长产出念开头，
     完整文字照发；短回复纯语音替代文字）；TTS 失败完整回落纯文字。
+    语音不带引用段（QQ 语音消息挂 reply 发不出去），回应指向靠听内容本身。
     """
     text = sanitize_bot_output(text)
     gid = getattr(event, "group_id", None)
@@ -166,10 +167,7 @@ async def send_reply(
             audio = await tts.synthesize(speech)
             if audio is not None:
                 try:
-                    msg = MessageSegment.record(audio)
-                    if quote:
-                        msg = MessageSegment.reply(event.message_id) + msg
-                    await matcher.send(msg)
+                    await matcher.send(MessageSegment.record(audio))
                 except Exception:
                     pass  # 语音发不出去（协议端不支持等），走下面的文字路径
                 else:

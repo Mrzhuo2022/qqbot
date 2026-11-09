@@ -89,11 +89,11 @@ def test_send_reply_voice_branch(monkeypatch, tmp_path):
         async def send(self, msg):
             sent.append(str(msg))
 
-    # 短回复：只发一条语音，不发文字
+    # 短回复：只发一条裸语音（语音挂不了引用段），不发文字
     asyncio.run(send_reply(FakeMatcher(), event, "你好呀", 1000))
-    assert len(sent) == 1 and "record" in sent[0]
+    assert len(sent) == 1 and "record" in sent[0] and "[CQ:reply" not in sent[0]
 
-    # 长产出（> tts_max_chars）：一条语音 + 完整文字照发
+    # 长产出（> tts_max_chars）：一条裸语音 + 完整文字照发
     long_text = "标题\n" + "内容" * 100
     sent.clear()
     asyncio.run(send_reply(FakeMatcher(), event, long_text, 100000, quote=False))
