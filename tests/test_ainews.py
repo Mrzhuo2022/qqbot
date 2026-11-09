@@ -40,13 +40,20 @@ REPORT = {
         {
             "label": "模型与产品",
             "items": [
-                {"title": "Claude 更新", "summary": "支持记忆组件。", "links": {}},
-                {"title": "无摘要条目", "summary": "", "links": {}},
+                {
+                    "title": "Claude 更新",
+                    "summary": "支持记忆组件。",
+                    "links": {"original": "https://example.com/claude", "aihot": "https://aihot.news/x"},
+                },
+                {"title": "无链接条目", "summary": "", "links": {}},
             ],
         },
         {"label": "空板块", "items": []},
     ],
-    "flashes": [{"title": "快讯一"}, {"title": "快讯二"}],
+    "flashes": [
+        {"title": "快讯一", "links": {"aihot": "https://aihot.news/f1"}},
+        {"title": "快讯二"},
+    ],
     "attribution": {"name": "AIHOT", "url": "https://aihot.news"},
 }
 
@@ -123,24 +130,32 @@ def test_fmt_daily_full_report():
     assert "Anthropic 冲刺 IPO" in text
     assert "这是今天的导语。" in text
     assert "【模型与产品】" in text
-    assert "1. Claude 更新：支持记忆组件。" in text
-    assert "2. 无摘要条目" in text  # 无摘要不挂冒号
+    # 条目标题下一行跟链接（优原文 original），不再带截断摘要
+    assert "1. Claude 更新\nhttps://example.com/claude" in text
+    assert "2. 无链接条目" in text
+    assert "支持记忆组件" not in text
     assert "【空板块】" not in text  # 没有条目的板块整段略过
     assert "⚡ 快讯" in text
-    assert "· 快讯一" in text
+    assert "· 快讯一\nhttps://aihot.news/f1" in text
+    assert "· 快讯二" in text
     assert "via aihot.news" not in text
     assert "generatedAt" not in text  # 元字段不进正文
 
 
-def test_fmt_daily_truncates_summary():
+def test_fmt_daily_item_link_prefers_original():
     report = {
         "date": "2026-11-08",
         "lead": {},
-        "sections": [{"label": "板块", "items": [{"title": "标题", "summary": "长" * 100}]}],
+        "sections": [{"label": "板块", "items": [
+            {"title": "标题", "links": {"original": "https://o", "aihot": "https://a"}},
+            {"title": "无链接", "links": {}},
+        ]}],
     }
     text = _fmt_daily(report)
-    assert "长" * 80 + "…" in text
-    assert "长" * 81 not in text
+    assert "1. 标题\nhttps://o" in text
+    assert "https://a" not in text
+    assert "2. 无链接" in text
+    assert text.endswith("2. 无链接")  # 尾部不挂空链接行
 
 
 # ── build_*：抓取失败/坏报文返回 None ──────────────────────

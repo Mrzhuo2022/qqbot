@@ -45,8 +45,10 @@ CN_TZ = dt.timezone(dt.timedelta(hours=8))
 # 热点榜源站 5 分钟刷新一次，本地缓存 10 分钟去抖；日报一天一份，缓存 3 小时
 _hot_cache = TTLCache(maxsize=4, ttl=10 * 60)
 _daily_cache = TTLCache(maxsize=4, ttl=3 * 3600)
-# 日报单条 summary 的截断长度
-SUMMARY_CLIP = 80
+def _item_url(x: dict) -> str:
+    """条目链接：优先原文（links.original），缺失退回 aihot 站内页。"""
+    links = x.get("links") if isinstance(x.get("links"), dict) else {}
+    return str(links.get("original") or links.get("aihot") or "").strip()
 
 
 def _now_cn() -> dt.datetime:
@@ -83,9 +85,7 @@ def _extract_hot(payload: dict) -> list[tuple[str, str]] | None:
             title = str(x.get("title", "")).strip()
             if not title:
                 continue
-            links = x.get("links") if isinstance(x.get("links"), dict) else {}
-            url = str(links.get("original") or links.get("aihot") or "").strip()
-            items.append((title, url))
+            items.append((title, _item_url(x)))
         if len(items) >= 10:
             break
     return items or None
@@ -123,22 +123,30 @@ def _fmt_daily(report: dict) -> str:
             continue
         label = str(sec.get("label", "")).strip()
         entries: list[str] = []
+        n = 0
         for x in sec.get("items") or []:
             if not isinstance(x, dict):
                 continue
             t = str(x.get("title", "")).strip()
             if not t:
                 continue
-            s = clip(str(x.get("summary", "")).strip(), SUMMARY_CLIP)
-            entries.append(f"{len(entries) + 1}. {t}：{s}" if s else f"{len(entries) + 1}. {t}")
+            n += 1
+            entries.append(f"{n}. {t}")
+            url = _item_url(x)
+            if url:
+                entries.append(url)
         if entries:
             lines += ["", f"【{label}】", *entries]
     flashes: list[str] = []
     for x in report.get("flashes") or []:
         if isinstance(x, dict):
             t = str(x.get("title", "")).strip()
-            if t:
-                flashes.append(f"· {t}")
+            if not t:
+                continue
+            flashes.append(f"· {t}")
+            url = _item_url(x)
+            if url:
+                flashes.append(url)
     if flashes:
         lines += ["", "⚡ 快讯", *flashes]
     return clip(sanitize_bot_output("\n".join(lines)), plugin_config.reply_max_chars)
