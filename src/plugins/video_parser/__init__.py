@@ -612,7 +612,8 @@ async def _send_video(event: MessageEvent, url: str, bvid: str | None) -> None:
 
     cached_path = VIDEO_DIR / f"{bvid}.mp4" if bvid else None
     if cached_path and cached_path.exists():
-        await video_matcher.send("♻️ 命中视频缓存，直接发送")
+        if not plugin_config.bili_video_silent:
+            await video_matcher.send("♻️ 命中视频缓存，直接发送")
         try:
             await video_matcher.send(MessageSegment.video(cached_path.resolve().as_uri()))
         except Exception:
@@ -620,10 +621,11 @@ async def _send_video(event: MessageEvent, url: str, bvid: str | None) -> None:
             await video_matcher.send("缓存视频发送失败（可能超过群限制）")
         return
 
-    await video_matcher.send(
-        f"⬇️ 正在下载视频（≤{plugin_config.bili_video_max_mb}MB，"
-        f"{plugin_config.bili_video_max_height}p），下载好后自动发送…"
-    )
+    if not plugin_config.bili_video_silent:
+        await video_matcher.send(
+            f"⬇️ 正在下载视频（≤{plugin_config.bili_video_max_mb}MB，"
+            f"{plugin_config.bili_video_max_height}p），下载好后自动发送…"
+        )
     async with _dl_lock:
         try:
             path = await asyncio.wait_for(
@@ -684,6 +686,16 @@ async def handle_video(event: MessageEvent):
             await _send_dynamic(event, e.content)
         else:
             await video_matcher.finish(str(e))
+    # 静默直发：开了 bili_video_silent 时B站视频不做摘要解析，
+    # ⏳ 提示后直接下载发视频文件本身（动态/非B站链接不受影响）
+    if (
+        is_bili
+        and bvid
+        and plugin_config.bili_video_download
+        and plugin_config.bili_video_silent
+    ):
+        await _send_video(event, url, bvid)
+        await video_matcher.finish()
     # 总结按「视频+群」隔离：每个群第一次发送都各自出分析、各自发视频
     scope = f"g{event.group_id}" if isinstance(event, GroupMessageEvent) else f"p{event.user_id}"
     cache_key = f"bili:{bvid}:{scope}" if bvid else f"url:{url}:{scope}"

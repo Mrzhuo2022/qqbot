@@ -99,6 +99,10 @@ class Config(BaseModel):
 
     # ── B站视频下载（下载后作为视频消息发回群里，发完即删）──
     bili_video_download: bool = True
+    # 静默直发：true 时B站视频链接不做摘要解析（省一次接口+LLM调用），
+    # 也不发「正在下载/缓存命中」过程提示——⏳ 之后直接发视频文件本身。
+    # 动态/专栏不受影响，错误提示保留；需 bili_video_download=true 才有意义
+    bili_video_silent: bool = False
     bili_video_max_mb: int = 100
     bili_video_max_height: int = 480
     bili_video_max_min: int = 15
