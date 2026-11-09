@@ -196,6 +196,20 @@ class Config(BaseModel):
     proactive_quiet_start: str = "01:00"
     proactive_quiet_end: str = "08:00"
 
+    # ── TTS 语音回复（任何 OpenAI audio/speech 兼容服务）──
+    # model 填了才启用；api_url 留空走 OpenAI 官方，本地服务 api_key 可随便填
+    tts_api_url: str = ""
+    tts_api_key: str = ""
+    tts_model: str = ""
+    # OpenAI 标准音色名；具体音色集看所接服务
+    tts_voice: str = "alloy"
+    tts_speed: float = 1.0
+    # 群级开关和其他功能一致：/bot off|on 语音，.env 默认用 group_plugin_off；
+    # TTS 未配置时开关开着也不生效
+    # 单条语音的文本上限：超出部分不念（QQ 语音有时长限制），长产出文字照发
+    tts_max_chars: int = 150
+    tts_timeout: int = 30
+
     # ── 长期记忆 ──
     memory_enabled: bool = True
     # 每人最多记住多少条事实

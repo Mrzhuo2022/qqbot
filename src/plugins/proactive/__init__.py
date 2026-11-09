@@ -18,7 +18,7 @@ import time
 from nonebot import Bot, on_message
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent, MessageSegment
 
-from src.shared import group_context, llm
+from src.shared import group_context, llm, tts
 from src.shared.config import plugin_config
 from src.shared.rate_limit import RateLimiter
 from src.shared.storage import group_plugin_enabled
@@ -144,15 +144,38 @@ async def proactive_speak(
     text = _pick_reply(raw)
     if text is None:
         return None, "skip"
+    # 语音模式：转成语音发送；合成或发送失败都回落文字
+    as_voice = False
+    if tts.voice_reply_on(event.group_id):
+        speech = tts.speech_text(text)
+        if speech:
+            audio = await tts.synthesize(speech)
+            if audio is not None:
+                as_voice = True
     try:
         await bot.call_api(
             "send_group_msg",
             group_id=event.group_id,
-            message=MessageSegment.reply(event.message_id) + text,
+            message=(
+                MessageSegment.reply(event.message_id) + MessageSegment.record(audio)
+                if as_voice
+                else MessageSegment.reply(event.message_id) + text
+            ),
         )
     except Exception:
-        logger.exception("群 %s 主动回复发送失败", event.group_id)
-        return None, "send"
+        if not as_voice:
+            logger.exception("群 %s 主动回复发送失败", event.group_id)
+            return None, "send"
+        # 语音消息发不出去（协议端不支持等），回落文字再试一次
+        try:
+            await bot.call_api(
+                "send_group_msg",
+                group_id=event.group_id,
+                message=MessageSegment.reply(event.message_id) + text,
+            )
+        except Exception:
+            logger.exception("群 %s 主动回复发送失败", event.group_id)
+            return None, "send"
     # 自己说的话也记进群上下文：后续对话和主动回复都知道 bot 刚说过什么
     group_context.append(event.group_id, "我", text)
     logger.info("群 %s 主动回复：%s", event.group_id, text[:50])

@@ -10,7 +10,7 @@ import time
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageEvent
 
-from src.shared import chat_store, group_context, llm, memory
+from src.shared import chat_store, group_context, llm, memory, tts
 from src.shared.config import plugin_config
 from src.shared.storage import (
     PLUGINS,
@@ -41,6 +41,7 @@ PLUGIN_NAMES = {
     "translate": "翻译",
     "image_gen": "生图",
     "proactive": "主动回复",
+    "voice": "语音",
 }
 
 # /bot off|on 额外接受的叫法
@@ -49,7 +50,7 @@ PLUGIN_ALIASES.update({
     "水群": "rank", "排行榜": "rank", "画图": "image_gen", "画画": "image_gen",
     "主动": "proactive", "主动发言": "proactive", "分析": "chat_analyze",
     "jev": "chat_analyze", "一言bot": "quote",
-    "热点": "ainews", "ai新闻": "ainews", "日报": "ainews",
+    "热点": "ainews", "ai新闻": "ainews", "日报": "ainews", "tts": "voice",
 })
 
 
@@ -81,6 +82,12 @@ async def handle_bot(event: MessageEvent):
             f"生图模型：{plugin_config.image_gen_model or '（关闭）'}",
             f"会话记忆：{llm.history_count()} 个",
         ]
+        if plugin_config.tts_model:
+            lines.append(
+                f"TTS：{plugin_config.tts_model} @ "
+                f"{plugin_config.tts_api_url or '（官方默认）'}"
+                f"（{'就绪' if tts.tts_ready() else '配置不完整'}）"
+            )
         if plugin_config.llm_fallback_api_key:
             health = "正常" if llm.main_healthy() else f"连续失败 {llm.main_failures()} 次"
             lines.append(
@@ -172,7 +179,7 @@ async def handle_bot(event: MessageEvent):
     await bot_cmd.finish(
         "用法：/bot status\n"
         "/bot clear [all]  清会话记忆\n"
-        "/bot off|on <功能>  群级开关，如 /bot off 聊天、/bot on 生图\n"
+        "/bot off|on <功能>  群级开关，如 /bot off 聊天、/bot on 生图、/bot off 语音\n"
         "/bot memory [QQ]  查看长期记忆\n"
         "/bot forget [QQ]  删除长期记忆\n"
         "手动开关优先于 .env 的 group_plugin_off 默认值，重启不丢"

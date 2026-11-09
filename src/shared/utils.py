@@ -13,6 +13,7 @@ from nonebot.adapters.onebot.v11 import (
 
 from src.shared.config import plugin_config
 from src.shared.storage import group_plugin_enabled
+from src.shared import tts
 
 URL_RE = re.compile(r"https?://[^\s\u4e00-\u9fff<>\"']+")
 
@@ -154,8 +155,29 @@ async def send_reply(
     出群统一收口：任何含用户可控字段（昵称、聊天原文、外部 API 返回等）的
     文本在这里统一过净化器剥 CQ 码——命令类插件的所有输出都走这里，
     单点兜住「昵称里藏 [CQ:at,qq=all]」这类注入。净化幂等，重复过无副作用。
+    语音模式：本群开了语音回复（/bot on 语音）时，先发一条语音（长产出念开头，
+    完整文字照发；短回复纯语音替代文字）；TTS 失败完整回落纯文字。
     """
-    parts = split_message(sanitize_bot_output(text), chunk_limit)
+    text = sanitize_bot_output(text)
+    gid = getattr(event, "group_id", None)
+    if gid is not None and tts.voice_reply_on(gid):
+        speech = tts.speech_text(text)
+        if speech:
+            audio = await tts.synthesize(speech)
+            if audio is not None:
+                try:
+                    msg = MessageSegment.record(audio)
+                    if quote:
+                        msg = MessageSegment.reply(event.message_id) + msg
+                    await matcher.send(msg)
+                except Exception:
+                    pass  # 语音发不出去（协议端不支持等），走下面的文字路径
+                else:
+                    # 短回复：语音已完整表达，不发文字。用完整文本长度判断
+                    # （speech_text 已截断，len(speech) 恒小于等于上限，不能用它判）
+                    if len(text) <= max(plugin_config.tts_max_chars, 10):
+                        return
+    parts = split_message(text, chunk_limit)
     await matcher.send(quote_message(event, parts[0]) if quote else parts[0])
     for part in parts[1:]:
         await matcher.send(part)

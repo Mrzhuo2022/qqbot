@@ -81,7 +81,7 @@ def set_setting(key: str, value) -> None:
 PLUGINS = (
     "chat", "link_parser", "video_parser", "forward_parser",
     "chat_analyze", "quote", "news", "ainews", "group_digest", "remind", "rank",
-    "weather", "translate", "image_gen", "proactive",
+    "weather", "translate", "image_gen", "proactive", "voice",
 )
 
 

@@ -222,7 +222,7 @@ Jev 可以不联网、不花 key——本地跑开源的 [laya](https://huggingf
 优先于 `.env` 的 `group_plugin_off` 默认值。可开关的功能：chat 聊天 / link_parser 链接 /
 video_parser 视频 / forward_parser 转发解析 / chat_analyze 群聊分析 / quote 一言 /
 news 新闻 / group_digest 晚报 / remind 提醒 / rank 排行 / weather 天气 /
-translate 翻译 / image_gen 生图 / proactive 主动回复。
+translate 翻译 / image_gen 生图 / proactive 主动回复 / voice 语音。
 其中 link_parser 只处理 `link_parser_whitelist` 白名单内的重点平台
 （默认：知乎/微信公众号/B站专栏，域名后缀匹配，想加其他网站自己补域名），
 个人域名、杂站、长尾站不触发。命中后**先发原文内容**（标题/作者 + 正文
@@ -314,6 +314,12 @@ NapCat 连上后（NoneBot 日志出现 WebSocket 连接），在群里 @它 说
 - **图像生成**：`image_gen_api_key` + `image_gen_model` 填好即可启用 `/image`（`/生图` 同义），任何 OpenAI
   `images/generations` 兼容服务都行（OpenAI dall-e / 智谱 CogView / SiliconFlow Kolors，
   示例见 `.env.example`）。本地模型/排队慢的服务把 `image_gen_timeout` 调大（默认 180 秒）。
+- **语音回复（TTS）**：`tts_model` 填好即启用，任何 OpenAI `audio/speech` 兼容服务都行
+  （`tts_api_url` 留空走 OpenAI 官方）。像其他功能一样用 `/bot off|on 语音` 按群开关
+  （默认开；TTS 未配置时开关开着也不生效）。开启后 bot 回复转成语音消息：
+  短回复纯语音，长产出（新闻/晚报）语音念开头 + 完整文字照发；TTS 服务挂了自动回落纯文字。
+  协议端需支持语音发送（NapCat 发语音要能调到 ffmpeg 做 wav→silk 转码）。
+  音色/语速用 `tts_voice` / `tts_speed`，单条语音长度用 `tts_max_chars` 控制。
 - **抓取体积上限**：`fetch_max_mb`（默认 10），网页/图片/短链解析的响应超过即中断下载，
   防超大文件撑爆内存；图片另有 `image_max_mb` 单独限制 vision 输入。
 - **让 bot 懂群聊氛围**：`chat_group_context=15`（注入最近 15 条群消息作上下文）；
