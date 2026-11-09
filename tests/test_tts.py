@@ -162,6 +162,33 @@ def test_synthesize_failure_returns_none(monkeypatch):
     assert asyncio.run(tts.synthesize("你好")) is None
 
 
+def test_pad_silence_adds_head_tail():
+    """首尾垫静音：时长增加、格式参数不变、头部确实是静音。"""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b"\x01\x02" * 2400)  # 0.1s 有声数据
+    padded = tts._pad_silence(buf.getvalue())
+
+    with wave.open(io.BytesIO(padded)) as r:
+        assert r.getnframes() == 2400 + int(24000 * tts.PAD_HEAD_S) + int(
+            24000 * tts.PAD_TAIL_S
+        )
+        assert (r.getframerate(), r.getnchannels(), r.getsampwidth()) == (24000, 1, 2)
+        head = r.readframes(int(24000 * tts.PAD_HEAD_S))
+        assert head == b"\x00" * len(head)
+
+
+def test_pad_silence_passthrough_non_wav():
+    """非 WAV 数据原样返回，不做尽力而为之外的处理。"""
+    assert tts._pad_silence(b"not a wav") == b"not a wav"
+
+
 def test_voice_reply_on_gated(monkeypatch, tmp_path):
     """群级开关走 /bot off|on 体系：手动覆盖 > .env 的 group_plugin_off > 默认开。"""
     monkeypatch.setattr(

@@ -5,8 +5,10 @@
 """
 
 import asyncio
+import io
 import logging
 import re
+import wave
 
 from openai import AsyncOpenAI, BadRequestError
 
@@ -16,6 +18,11 @@ from src.shared.config import plugin_config
 logger = logging.getLogger("tts")
 
 _client_instance: AsyncOpenAI | None = None
+
+# 首尾静音垫片（秒）：TTS 输出首尾音节容易被 silk 转码/QQ 播放削掉，垫点冗余；
+# 尾部比头部留长些（结尾被切更难忍）
+PAD_HEAD_S = 0.15
+PAD_TAIL_S = 0.25
 
 # 语音里没法听的元素：链接原样念出来是乱码，CQ 码是内部协议文本。
 # URL 排除 CJK/中文标点/全角符号/引号：`\S+` 会把「https://x.com/a。好的」整句吞掉
@@ -60,6 +67,26 @@ def voice_reply_on(group_id: int) -> bool:
     return tts_ready() and storage.group_plugin_enabled_id(group_id, "voice")
 
 
+def _pad_silence(data: bytes) -> bytes:
+    """给 WAV 首尾垫静音，防首尾音节被削；非标准 PCM WAV 原样返回（尽力而为）。"""
+    try:
+        with wave.open(io.BytesIO(data)) as r:
+            params = r.getparams()
+            pcm = r.readframes(r.getnframes())
+    except Exception:
+        return data
+    # 8-bit WAV 是 unsigned，静音是 0x80；16/24/32-bit 的静音是全零
+    fill = b"\x80" if params.sampwidth == 1 else b"\x00"
+    unit = params.nchannels * params.sampwidth
+    head = fill * (int(params.framerate * PAD_HEAD_S) * unit)
+    tail = fill * (int(params.framerate * PAD_TAIL_S) * unit)
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setparams(params)
+        w.writeframes(head + pcm + tail)
+    return out.getvalue()
+
+
 async def synthesize(text: str) -> bytes | None:
     """文本转音频字节；失败返回 None（调用方回落文字），不抛异常。"""
     if not tts_ready():
@@ -76,7 +103,7 @@ async def synthesize(text: str) -> bytes | None:
             ),
             timeout=_timeout(),
         )
-        return resp.content
+        return _pad_silence(resp.content)
     except BadRequestError:
         # 有些兼容网关不认 speed/response_format 这类参数；去掉重试一次，
         # 格式交给服务默认（wav 念不了就整体回落，由调用方处理）
@@ -90,7 +117,7 @@ async def synthesize(text: str) -> bytes | None:
                 ),
                 timeout=_timeout(),
             )
-            return resp.content
+            return _pad_silence(resp.content)
         except Exception as e:
             logger.warning("TTS 最小参数重试仍失败: %s", e)
             return None
