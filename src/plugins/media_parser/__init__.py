@@ -245,6 +245,10 @@ def _ffmpeg() -> str | None:
     return shutil.which("ffmpeg")
 
 
+class VideoDownloadError(ValueError):
+    """业务性下载错误（超限等），消息可直接回显群里。"""
+
+
 def _download_to(url: str, dest: Path, headers: dict) -> None:
     """同步流式下载落盘（丢线程池跑），超限即断并删残件。"""
     limit = plugin_config.bili_video_max_mb * 1024 * 1024
@@ -259,7 +263,9 @@ def _download_to(url: str, dest: Path, headers: dict) -> None:
                     for chunk in resp.iter_bytes(65536):
                         written += len(chunk)
                         if written > limit:
-                            raise ValueError(f"视频超过 {plugin_config.bili_video_max_mb}MB 上限")
+                            raise VideoDownloadError(
+                                f"视频超过 {plugin_config.bili_video_max_mb}MB 上限"
+                            )
                         f.write(chunk)
     except Exception:
         dest.unlink(missing_ok=True)
@@ -354,6 +360,10 @@ async def _deliver_video(
                 )
         except asyncio.TimeoutError:
             await send_reply(media_matcher, event, "❌ 视频下载超时了", 500)
+            return
+        except VideoDownloadError as e:
+            # 业务性失败（超限）：文案是我们拼的白名单内容，直接回显
+            await send_reply(media_matcher, event, f"❌ {e}", 500)
             return
         except Exception as e:
             logger.warning("视频下载失败 %s: %s", url, e)

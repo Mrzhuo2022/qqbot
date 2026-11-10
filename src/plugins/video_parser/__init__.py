@@ -220,10 +220,11 @@ async def _fetch_bili_info(bvid: str) -> dict:
         )
     body = api.json()
     if body.get("code") == -352:
-        raise ValueError("B站风控拦截（-352），可在 .env 配置 bili_cookie 缓解")
+        logger.warning("B站风控拦截（-352），可在 .env 配置 bili_cookie 缓解")
+        raise VideoDownloadError("B站风控拦截了，稍后再试试吧")
     data = body.get("data") or {}
     if not data:
-        raise ValueError("B 站接口没有返回视频信息")
+        raise VideoDownloadError("B 站接口没有返回视频信息（视频可能不存在）")
 
     stat = data.get("stat", {})
     info_text = (
@@ -284,17 +285,21 @@ def _resolve_video_file(info: dict, max_mb: int) -> Path:
         if path.exists():
             if path.stat().st_size > max_mb * 1024 * 1024:
                 path.unlink(missing_ok=True)
-                raise ValueError(f"视频实际大小超过 {max_mb}MB 上限")
+                raise VideoDownloadError(f"视频实际大小超过 {max_mb}MB 上限")
             return path
-    raise ValueError(
-        f"视频超过 {max_mb}MB/时长上限、或该视频需要登录（可配 bili_cookie 后重试）"
+    logger.warning(
+        "B站视频不可下载：超过 %sMB/时长上限或需要登录，可配 bili_cookie 后重试", max_mb
     )
+    raise VideoDownloadError(f"视频超过 {max_mb}MB/时长上限，或该视频需要登录才能下载")
+
+
+class VideoDownloadError(ValueError):
+    """业务性失败（合集/超限/需登录/风控等），消息是自拼白名单文案，可直接回显群里。"""
 
 
 def _download_bili_video(url: str) -> Path:
     """yt-dlp 下载B站视频到临时目录；同步阻塞，调用方需丢线程池。"""
     import yt_dlp
-
     VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     opts: dict = {
         # B站清晰度档位指短边：竖屏视频 height 很大，所以要 width/height 双条件；
@@ -325,7 +330,7 @@ def _download_bili_video(url: str) -> Path:
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
     if info and "entries" in info:
-        raise ValueError("不支持合集/多P，请发单个视频的链接")
+        raise VideoDownloadError("不支持合集/多P，请发单个视频的链接")
     return _resolve_video_file(info or {}, plugin_config.bili_video_max_mb)
 
 
@@ -636,6 +641,10 @@ async def _send_video(event: MessageEvent, url: str, bvid: str | None) -> None:
         except (asyncio.TimeoutError, TimeoutError):
             await video_matcher.send("视频下载超时了，试试短一点的视频吧")
             return
+        except VideoDownloadError as e:
+            # 业务性失败（合集/超限/需登录）：文案是我们拼的白名单内容，直接回显
+            await video_matcher.send(str(e))
+            return
         except Exception as e:
             logger.warning("视频下载失败 %s: %s", url, e)
             # 原始异常可能带接口地址等内部细节，不回显到群里
@@ -713,13 +722,18 @@ async def handle_video(event: MessageEvent):
     try:
         if is_bili:
             if not bvid:
-                raise ValueError("未找到 BV 号（可能是动态/直播/专栏链接）")
+                raise VideoDownloadError("未找到 BV 号（可能是动态/直播/专栏链接）")
             info = await _fetch_bili_info(bvid)
         else:
             # yt-dlp 是同步阻塞的，丢线程池跑
             info = await asyncio.wait_for(
                 asyncio.to_thread(_ytdlp_extract, url), timeout=120
             )
+    except VideoDownloadError as e:
+        # 业务性失败（风控/无信息等）：文案是我们拼的白名单内容，直接回显
+        await video_matcher.finish(str(e))
+    except (asyncio.TimeoutError, TimeoutError):
+        await video_matcher.finish("链接解析超时了，稍后再试试吧")
     except Exception as e:
         logger.warning("视频解析失败 %s: %s", url, e)
         await video_matcher.finish("链接解析失败了，稍后再试试吧")
