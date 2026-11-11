@@ -154,6 +154,17 @@ class Config(BaseModel):
     # aihot.news 站点地址（接口是 /api/v1/hot-topics 和 /api/v1/dailies/latest）
     ainews_api: str = "https://aihot.news"
 
+    # ── HN 日报（/hndaily：读本机 hn-daily 项目的每日精选，定时推送）──
+    # 推送时间 HH:MM，留空关闭定时（/hndaily 命令仍可用）；要配在 hn-daily 的
+    # 生成时间之后（生成时间在 hn-daily 那边配），到点还没报就是那边出了问题
+    hndaily_time: str = "08:30"
+    # 推送目标群号，留空则跟随 group_whitelist
+    hndaily_groups: list[int] = []
+    # 推送目标个人 QQ 号（私聊推送），和群号可同时配
+    hndaily_users: list[int] = []
+    # hn-daily 落盘的 API payload 路径（output/api/latest.json，同机部署直接读文件）
+    hndaily_json: str = "/opt/hn-daily/output/api/latest.json"
+
     # ── 群聊晚报（每晚定时总结当天群聊推送）──
     # 生成时间 HH:MM，留空关闭定时（/digest 命令仍可用）
     digest_time: str = "22:30"

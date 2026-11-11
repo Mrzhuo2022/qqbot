@@ -34,6 +34,7 @@ PLUGIN_NAMES = {
     "quote": "一言",
     "news": "新闻",
     "ainews": "AI热点",
+    "hndaily": "HN日报",
     "group_digest": "晚报",
     "remind": "提醒",
     "rank": "排行",
@@ -100,6 +101,8 @@ async def handle_bot(event: MessageEvent):
             schedules.append(f"新闻 {plugin_config.daily_news_time}")
         if plugin_config.ainews_time.strip():
             schedules.append(f"AI热点 {plugin_config.ainews_time}")
+        if plugin_config.hndaily_time.strip():
+            schedules.append(f"HN日报 {plugin_config.hndaily_time}")
         if plugin_config.digest_time.strip():
             schedules.append(f"晚报 {plugin_config.digest_time}")
         reminders = get_setting("reminders", [])

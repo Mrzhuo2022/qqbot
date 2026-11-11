@@ -42,6 +42,8 @@ QQ 消息 ──► NapCat（登录 QQ 号，翻译成 OneBot 11 API）
 | @机器人 /news push             | 管理员立即向所有目标群推送新闻                                                                                                 |
 | @机器人 /ainews                | AI 热点 Top10（`/AI热点` 同义；`/ainews 日报` 手动看今日日报）                                                                 |
 | @机器人 /ainews push           | 管理员立即向所有目标群推送 AI 日报                                                                                             |
+| @机器人 /hndaily               | HN 每日科技精选（`/hn日报` 同义，读本机 hn-daily 生成的日报）                                                                  |
+| @机器人 /hndaily push          | 管理员立即向所有目标群推送 HN 日报                                                                                             |
 | @机器人 /quote                 | 随机一句「一言」（hi.logacg.com，官方源兜底；`/一言` 同义）                                                                  |
 | @机器人 /digest                | 预览本群今日「群聊晚报」（`/晚报` 同义）；`/digest push` 管理员立即推送所有目标群                                          |
 | @机器人 /remind 30min 拿快递   | 定时提醒，到点在原地 @ 你（`/提醒` 同义；`list` 查看、`cancel 编号` 取消）                                               |
@@ -124,6 +126,23 @@ AI 热点榜 Top 10（公共接口，匿名可用，本地缓存 10 分钟）；
 每天 08:00（北京时间）生成，推送时间别配得比它早。按日报日期去重（落盘），
 重启不会重复推；定时推送全军覆没时每 30 分钟自动重试、最多 3 次。
 群级开关：`/bot off AI热点`，该群的定时推送和 `/ainews` 命令都停用。
+
+## HN 日报
+
+`/hndaily`（`/hn日报` 同义）读本机 [hn-daily](https://github.com/Mrzhuo2022/hn-daily)
+项目落盘的每日精选（`output/api/latest.json`，同机部署直接读文件），
+`/hndaily push` 管理员立即推送。
+
+每天 `hndaily_time`（默认 08:30）自动把最新一期推送到目标群
+（`hndaily_groups`，留空跟随 `group_whitelist`）和指定个人 QQ 号
+（`hndaily_users`，私聊推送；两类目标可同时配，都空则不推）。
+推送时间要配在 hn-daily 生成时间之后（生成时间在 hn-daily 那边配置），
+正常到点就有报；到点还没报说明 hn-daily 出了问题，只吸收小晚点
+（每 30 分钟自动重试、最多 3 次），那边修好后 `/hndaily push` 手动补推。
+按报告日期去重（落盘），重启不会重复推；一个目标都没发出去时不记标记，
+可 `/hndaily push` 重试。
+群级开关：`/bot off HN日报`，该群的定时推送和 `/hndaily` 命令都停用；
+`hndaily_time` 留空关闭定时。
 
 ## 群聊晚报
 
@@ -333,6 +352,9 @@ NapCat 连上后（NoneBot 日志出现 WebSocket 连接），在群里 @它 说
 - **定时新闻**：`daily_news_time` 改推送时间（留空关闭），`daily_news_groups` 指定推送群。
 - **AI 热点**：`ainews_time` 改日报推送时间（留空关闭），`ainews_groups` 指定推送群，
   `ainews_users` 指定私聊推送的 QQ 号，`ainews_api` 换 aihot.news 站点地址（一般不用动）。
+- **HN 日报**：`hndaily_time` 改推送时间（留空关闭），`hndaily_groups` 指定推送群，
+  `hndaily_users` 指定私聊推送的 QQ 号，`hndaily_json` 指向 hn-daily 的
+  `output/api/latest.json`（同机部署默认路径即可）。
 - **群聊晚报**：`digest_time` 改出报时间（留空关闭），`digest_groups` 指定推送群，
   `digest_min_messages` 调安静群门槛。
 - **主动回复**：`proactive_enabled` 总开关，`proactive_chance` 评估概率，

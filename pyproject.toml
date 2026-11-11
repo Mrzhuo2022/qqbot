@@ -40,6 +40,7 @@ ignore = [
 "src/plugins/group_digest/__init__.py" = ["E402"]
 "src/plugins/daily_news/__init__.py" = ["E402"]
 "src/plugins/ainews/__init__.py" = ["E402"]
+"src/plugins/hndaily/__init__.py" = ["E402"]
 "src/plugins/rank/__init__.py" = ["E402"]
 "src/plugins/remind/__init__.py" = ["E402"]
 "src/plugins/video_parser/__init__.py" = ["E402"]
