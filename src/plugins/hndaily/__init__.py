@@ -7,7 +7,9 @@
 - hndaily_json：hn-daily 落盘的 API payload（output/api/latest.json），同机部署直接读文件
 - /hndaily：手动看最新一期；/hndaily push：管理员立即推送
 - 群级开关 /bot off HN日报：某群退出定时推送，/hndaily 命令在该群也不可用
-- 消息是纯文本（QQ 不渲染 Markdown）；每天只推一次（按报告日期去重，落盘重启不重复推）；
+- 以合并转发消息发送（汇总节点 + 每条目一节点）：报告再长都完整、链接可点、
+  只占一条消息；协议端不支持转发时回落纯文本分段
+- 每天只推一次（按报告日期去重，落盘重启不重复推）；
   到点发现报告还不是今天的，只吸收生成的小晚点（重试几次），真没报说明
   hn-daily 挂了——多等无济于事，这边修不了，那边修好后 /hndaily push 手动补推
 - 报告内容含抓取的网页文本，按不可信数据处理（出群统一过净化器）
@@ -19,7 +21,7 @@ import json
 import logging
 
 from nonebot import get_bot, on_command, require
-from nonebot.adapters.onebot.v11 import Message, MessageEvent
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent
 from nonebot.params import CommandArg
 
 require("nonebot_plugin_apscheduler")
@@ -63,12 +65,24 @@ def _load_report() -> dict | None:
     return report
 
 
-def _fmt_report(report: dict) -> str:
-    """API payload → QQ 纯文本；坏条目跳过，元字段（id/generated_at）不进正文。"""
+def _fmt_report(report: dict) -> list[str]:
+    """API payload → 转发节点文本列表；坏条目跳过，元字段（id/generated_at）不进正文。
+
+    节点 0 是汇总（标题/日期/主题/今日总结/persona 签名），之后每条目一节点。
+    合并转发装得下完整内容，不再按 3000 字截断；链接保留在条目节点里可点。
+    """
     lines = [f"📰 HN 每日科技精选 · {report.get('date')}"]
     theme = str(report.get("theme", "")).strip()
     if theme:
         lines.append(theme)
+    summary = [str(s).strip() for s in report.get("summary") or [] if str(s).strip()]
+    if summary:
+        lines += ["", "📋 今日总结", *(f"· {s}" for s in summary)]
+    persona = str(report.get("persona", "")).strip()
+    if persona:
+        lines += ["", persona]
+    nodes = [sanitize_bot_output("\n".join(lines))]
+
     n = 0
     for x in report.get("items") or []:
         if not isinstance(x, dict):
@@ -77,32 +91,59 @@ def _fmt_report(report: dict) -> str:
         if not title:
             continue
         n += 1
-        lines += ["", f"{n}. {title} ⭐{x.get('score', 0)} 💬{x.get('comments', 0)}"]
+        item = [f"{n}. {title} ⭐{x.get('score', 0)} 💬{x.get('comments', 0)}"]
         for p in x.get("points") or []:
             p = str(p).strip()
             if p:
-                lines.append(f"· {p}")
+                item.append(f"· {p}")
         comment = str(x.get("comment", "")).strip()
         if comment:
-            lines.append(f"💬 {comment}")
+            item.append(f"💬 {comment}")
         url = str(x.get("url") or x.get("hn_link") or "").strip()
         if url:
-            lines.append(url)
-    summary = [str(s).strip() for s in report.get("summary") or [] if str(s).strip()]
-    if summary:
-        lines += ["", "📋 今日总结", *(f"· {s}" for s in summary)]
-    persona = str(report.get("persona", "")).strip()
-    if persona:
-        lines += ["", persona]
-    return clip(sanitize_bot_output("\n".join(lines)), plugin_config.reply_max_chars)
+            item.append(url)
+        nodes.append(sanitize_bot_output("\n".join(item)))
+    return nodes
 
 
-def build_latest() -> tuple[str, str] | None:
-    """返回 (报告日期, 格式化文本)；读不到返回 None。"""
+def build_latest() -> tuple[str, list[str]] | None:
+    """返回 (报告日期, 转发节点文本列表)；读不到返回 None。"""
     report = _load_report()
     if report is None:
         return None
     return str(report.get("date")), _fmt_report(report)
+
+
+def _forward_nodes(self_id: str, texts: list[str]) -> list[dict]:
+    """文本列表 → OneBot v11 自定义转发节点（发送侧标准格式）。"""
+    return [
+        {
+            "type": "node",
+            "data": {
+                "user_id": str(self_id),
+                "nickname": "HN 日报",
+                "content": [{"type": "text", "data": {"text": t}}],
+            },
+        }
+        for t in texts
+    ]
+
+
+async def _send_report(bot, event: MessageEvent, texts: list[str]) -> None:
+    """命令场景发合并转发；协议端不支持时回落纯文本分段，别烂尾。"""
+    is_group = isinstance(event, GroupMessageEvent)
+    fallback = clip("\n\n".join(texts), plugin_config.reply_max_chars)
+    try:
+        await bot.call_api(
+            "send_group_forward_msg" if is_group else "send_private_forward_msg",
+            **({"group_id": event.group_id} if is_group else {"user_id": event.user_id}),
+            messages=_forward_nodes(bot.self_id, texts),
+        )
+    except Exception:
+        logger.exception("合并转发发送失败，回落纯文本")
+        await send_reply(
+            hndaily_cmd, event, fallback, plugin_config.reply_chunk_chars, quote=False
+        )
 
 
 async def _push_daily(force: bool = False) -> tuple[int, str]:
@@ -118,7 +159,7 @@ async def _push_daily(force: bool = False) -> tuple[int, str]:
     latest = build_latest()
     if latest is None:
         return 0, "HN 日报读不到（文件缺失或格式不对），稍后再试"
-    date, text = latest
+    date, texts = latest
     # 定时推送只认今天的报告：hn-daily 还没跑完就等着，别把昨天的推出去
     if not force and date != _today_cn():
         return 0, f"HN 日报还不是今天的（最新 {date}），等 hn-daily 跑完再推"
@@ -128,21 +169,37 @@ async def _push_daily(force: bool = False) -> tuple[int, str]:
         bot = get_bot()
     except Exception:
         return 0, "没有已连接的 QQ，推送失败"
+    nodes = _forward_nodes(bot.self_id, texts)
+    fallback = clip("\n\n".join(texts), plugin_config.reply_max_chars)
     ok = 0
     total = len(group_targets) + len(user_targets)
     for gid in group_targets:
         try:
-            await bot.call_api("send_group_msg", group_id=gid, message=text)
+            await bot.call_api(
+                "send_group_forward_msg", group_id=gid, messages=nodes
+            )
             ok += 1
         except Exception:
-            logger.exception("HN 日报推送到群 %s 失败", gid)
+            logger.exception("HN 日报转发推送到群 %s 失败，回落纯文本", gid)
+            try:
+                await bot.call_api("send_group_msg", group_id=gid, message=fallback)
+                ok += 1
+            except Exception:
+                logger.exception("HN 日报推送到群 %s 失败", gid)
         await asyncio.sleep(1)
     for uid in user_targets:
         try:
-            await bot.call_api("send_private_msg", user_id=uid, message=text)
+            await bot.call_api(
+                "send_private_forward_msg", user_id=uid, messages=nodes
+            )
             ok += 1
         except Exception:
-            logger.exception("HN 日报推送给 QQ %s 失败", uid)
+            logger.exception("HN 日报转发推送给 QQ %s 失败，回落纯文本", uid)
+            try:
+                await bot.call_api("send_private_msg", user_id=uid, message=fallback)
+                ok += 1
+            except Exception:
+                logger.exception("HN 日报推送给 QQ %s 失败", uid)
         await asyncio.sleep(1)
     if ok:
         # 一个目标都没发出去就不记标记，稍后还能 /hndaily push 重试
@@ -207,7 +264,7 @@ hndaily_cmd = on_command(
 
 
 @hndaily_cmd.handle()
-async def handle_hndaily(event: MessageEvent, args: Message = CommandArg()):
+async def handle_hndaily(event: MessageEvent, bot: Bot, args: Message = CommandArg()):
     sub = str(args).strip()
     if sub == "push":
         if not is_superuser(event):
@@ -219,8 +276,8 @@ async def handle_hndaily(event: MessageEvent, args: Message = CommandArg()):
     latest = build_latest()
     if latest is None:
         await hndaily_cmd.finish("HN 日报还没生成，检查 hn-daily 是否跑过")
-    date, text = latest
+    date, texts = latest
     if date != _today_cn():
-        text = f"（最新一期是 {date}，今天的还没生成）\n\n{text}"
-    await send_reply(hndaily_cmd, event, text, plugin_config.reply_chunk_chars, quote=False)
+        texts[0] = f"（最新一期是 {date}，今天的还没生成）\n\n{texts[0]}"
+    await _send_report(bot, event, texts)
     await hndaily_cmd.finish()

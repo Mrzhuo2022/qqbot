@@ -75,28 +75,31 @@ def test_load_report_rejects_no_date(tmp_path, monkeypatch):
     assert _load_report() is None
 
 
-# ── 格式化 ───────────────────────────────────────────────
+# ── 格式化（合并转发节点列表：节点0=汇总，之后每条目一节点）──
 
 def test_fmt_report_numbered():
-    text = _fmt_report(REPORT)
-    assert "📰 HN 每日科技精选 · 2026-11-11" in text
-    assert "AI 基础设施与开发者工具的一天" in text
-    # 标题 + 得分/评论一行，要点圆点，点评带 💬
-    assert "1. Rust 重写核心服务后，延迟降了一半 ⭐924 💬1340" in text
-    assert "· 要点一" in text
-    assert "💬 工程复盘写得扎实，值得精读。" in text
+    nodes = _fmt_report(REPORT)
+    assert len(nodes) == 3  # 汇总 + 2 条目
+    head = nodes[0]
+    assert "📰 HN 每日科技精选 · 2026-11-11" in head
+    assert "AI 基础设施与开发者工具的一天" in head
+    assert "📋 今日总结" in head
+    assert "· 推理成本继续下探" in head
+    assert "🌙 由灰之魔女伊蕾娜为您整理" in head
+    assert "generated_at" not in "\n".join(nodes)  # 元字段不进正文
+    # 条目节点：标题 + 得分/评论一行，要点圆点，点评带 💬
+    assert "1. Rust 重写核心服务后，延迟降了一半 ⭐924 💬1340" in nodes[1]
+    assert "· 要点一" in nodes[1]
+    assert "💬 工程复盘写得扎实，值得精读。" in nodes[1]
+    assert "https://example.com/rust" in nodes[1]
     # 中文标题缺失时退回 title_original；无外链条目链接退回 hn_link
-    assert "2. Ask HN：你们怎么管理个人知识库？ ⭐210 💬87" in text
-    assert "https://example.com/rust" in text
-    assert "https://news.ycombinator.com/item?id=49076001" in text
-    assert "📋 今日总结" in text
-    assert "🌙 由灰之魔女伊蕾娜为您整理" in text
-    assert "generated_at" not in text  # 元字段不进正文
+    assert "2. Ask HN：你们怎么管理个人知识库？ ⭐210 💬87" in nodes[2]
+    assert "https://news.ycombinator.com/item?id=49076001" in nodes[2]
 
 
 def test_fmt_report_strips_cq_codes():
     report = {**REPORT, "items": [{**REPORT["items"][0], "comment": "看[CQ:at,qq=all]这个"}]}
-    assert "[CQ:at" not in _fmt_report(report)
+    assert "[CQ:at" not in "\n".join(_fmt_report(report))
 
 
 def test_fmt_report_skips_bad_items():
@@ -110,12 +113,13 @@ def test_fmt_report_skips_bad_items():
             {"title_original": "Only original", "score": 2, "comments": 0},
         ],
     }
-    text = _fmt_report(report)
-    assert "1. 有效条目" in text  # 编号连续，坏条目不占号
-    assert "2. Only original" in text
-    assert "不是字典" not in text
+    nodes = _fmt_report(report)
+    assert len(nodes) == 3  # 汇总 + 2 条有效条目
+    assert "1. 有效条目" in nodes[1]  # 编号连续，坏条目不占号
+    assert "2. Only original" in nodes[2]
+    assert "不是字典" not in "\n".join(nodes)
     # 两个条目都没有任何链接，不挂空链接行
-    assert "https://" not in text
+    assert "https://" not in "\n".join(nodes)
 
 
 # ── build_latest：读不到返回 None ─────────────────────────
@@ -127,9 +131,9 @@ def test_build_latest_none_on_missing(tmp_path, monkeypatch):
 
 def test_build_latest_returns_date_and_text(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin_config, "hndaily_json", _write_report(tmp_path))
-    date, text = hd.build_latest()
+    date, nodes = hd.build_latest()
     assert date == "2026-11-11"
-    assert "HN 每日科技精选" in text
+    assert "HN 每日科技精选" in nodes[0]
 
 
 # ── push_daily：判新 + 按报告日期去重，只在发出去后记标记 ──
@@ -148,11 +152,13 @@ def test_push_daily_dedup_by_report_date(monkeypatch):
     _patch_targets(monkeypatch, [111])
 
     def fake_latest():
-        return ("2026-11-11", "📰 HN 日报")
+        return ("2026-11-11", ["📰 HN 日报"])
 
     monkeypatch.setattr(hd, "build_latest", fake_latest)
 
     class FakeBot:
+        self_id = "10000"
+
         async def call_api(self, api, **kw):
             return {}
 
@@ -171,7 +177,7 @@ def test_push_daily_skips_stale_report(monkeypatch):
     _patch_targets(monkeypatch, [111])
 
     def stale():
-        return ("2026-11-10", "📰 昨天的日报")
+        return ("2026-11-10", ["📰 昨天的日报"])
 
     monkeypatch.setattr(hd, "build_latest", stale)
 
@@ -185,6 +191,8 @@ def test_push_daily_skips_stale_report(monkeypatch):
 
     # force（管理员手动 push）允许推过期报告
     class FakeBot:
+        self_id = "10000"
+
         async def call_api(self, api, **kw):
             return {}
 
@@ -200,7 +208,7 @@ def test_push_daily_marks_pushed_only_when_delivered(monkeypatch):
     _patch_targets(monkeypatch, [111, 222])
 
     def fake_latest():
-        return ("2026-11-11", "📰 HN 日报")
+        return ("2026-11-11", ["📰 HN 日报"])
 
     async def nosleep(_):
         return None
@@ -209,6 +217,8 @@ def test_push_daily_marks_pushed_only_when_delivered(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", nosleep)
 
     class FakeBot:
+        self_id = "10000"
+
         def __init__(self, ok: bool):
             self.ok = ok
 
@@ -238,12 +248,14 @@ def test_push_daily_respects_group_switch(monkeypatch):
     sent = []
 
     class FakeBot:
+        self_id = "10000"
+
         async def call_api(self, api, **kw):
             sent.append(kw.get("group_id"))
             return {}
 
     def fake_latest():
-        return ("2026-11-11", "📰 HN 日报")
+        return ("2026-11-11", ["📰 HN 日报"])
 
     async def nosleep(_):
         return None
@@ -269,6 +281,35 @@ def test_push_daily_no_targets(monkeypatch):
     assert ok == -1 and "没有推送目标" in msg
 
 
+def test_push_daily_falls_back_to_plain_text(monkeypatch):
+    # 协议端不支持转发 API 时回落纯文本，目标仍算送达
+    _patch_targets(monkeypatch, [111])
+    monkeypatch.setattr(hd, "set_setting", lambda k, v: None)
+    monkeypatch.setattr(hd, "get_setting", lambda k, default=None: None)
+    sent = []
+
+    class FakeBot:
+        self_id = "10000"
+
+        async def call_api(self, api, **kw):
+            sent.append(api)
+            if api == "send_group_forward_msg":
+                raise RuntimeError("协议端不支持")
+
+    def fake_latest():
+        return ("2026-11-11", ["📰 HN 日报"])
+
+    async def nosleep(_):
+        return None
+
+    monkeypatch.setattr(hd, "build_latest", fake_latest)
+    monkeypatch.setattr(asyncio, "sleep", nosleep)
+    monkeypatch.setattr(hd, "get_bot", lambda: FakeBot())
+    result = asyncio.run(hd.push_daily(force=True))
+    assert sent == ["send_group_forward_msg", "send_group_msg"]
+    assert "1/1" in result
+
+
 def test_push_daily_sends_to_users(monkeypatch):
     _patch_targets(monkeypatch, [], users=[999, 888])
     monkeypatch.setattr(hd, "set_setting", lambda k, v: None)
@@ -276,11 +317,13 @@ def test_push_daily_sends_to_users(monkeypatch):
     sent = []
 
     class FakeBot:
+        self_id = "10000"
+
         async def call_api(self, api, **kw):
-            sent.append((api, kw.get("user_id")))
+            sent.append((api, kw.get("user_id"), kw.get("messages")))
 
     def fake_latest():
-        return ("2026-11-11", "📰 HN 日报")
+        return ("2026-11-11", ["📰 HN 日报"])
 
     async def nosleep(_):
         return None
@@ -290,8 +333,8 @@ def test_push_daily_sends_to_users(monkeypatch):
     monkeypatch.setattr(hd, "get_bot", lambda: FakeBot())
     result = asyncio.run(hd.push_daily(force=True))
     assert sent == [
-        ("send_private_msg", 999),
-        ("send_private_msg", 888),
+        ("send_private_forward_msg", 999, hd._forward_nodes("10000", ["📰 HN 日报"])),
+        ("send_private_forward_msg", 888, hd._forward_nodes("10000", ["📰 HN 日报"])),
     ]
     assert "2/2" in result
 
