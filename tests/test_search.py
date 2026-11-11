@@ -277,3 +277,57 @@ def test_wants_search_requires_tome_in_group(monkeypatch):
     assert asyncio.run(sp._wants_search(GroupEv("帮我搜 Rust 版本", to_me=True)))
     # 私聊（非 GroupMessageEvent）不受 to_me 检查影响
     assert asyncio.run(sp._wants_search(PlainEv("帮我搜 Rust 版本")))
+
+
+# ── /search 点名搜索源 ────────────────────────────────────────────
+
+def test_split_provider():
+    assert sp._split_provider("tavily Rust 版本") == ("tavily", "Rust 版本")
+    assert sp._split_provider("博查 天气") == ("bocha", "天气")
+    assert sp._split_provider("FC Rust") == ("firecrawl", "Rust")  # 大小写/别名
+    assert sp._split_provider("Rust 版本") == (None, "Rust 版本")  # 没点名
+    # 只有源名没有查询词：整串当查询词（用户可能就想搜这个词）
+    assert sp._split_provider("tavily") == (None, "tavily")
+    assert sp._split_provider("博查天气") == (None, "博查天气")  # 无空格不拆
+
+
+# ── chat 唤醒词触发搜索 ───────────────────────────────────────────
+
+def test_wake_prefix(monkeypatch):
+    monkeypatch.setattr(plugin_config, "chat_wake_words", ["小助手", "小"])
+    assert sp._wake_prefix_hit("小助手 联网搜 Rust")
+    assert sp._wake_prefix_hit("小搜索一下")
+    assert not sp._wake_prefix_hit("帮我搜 Rust")  # 唤醒词必须开头
+    assert not sp._wake_prefix_hit("")
+
+    # 多个命中取最长；没配唤醒词原样返回
+    assert sp._strip_wake_prefix("小助手 帮我搜 Rust") == "帮我搜 Rust"
+    assert sp._strip_wake_prefix("帮我搜 Rust") == "帮我搜 Rust"
+    monkeypatch.setattr(plugin_config, "chat_wake_words", [])
+    assert sp._strip_wake_prefix("小助手 帮我搜 Rust") == "小助手 帮我搜 Rust"
+
+
+def test_search_query_strips_wake_prefix(monkeypatch):
+    monkeypatch.setattr(plugin_config, "chat_wake_words", ["小助手"])
+    ev = PlainEv("小助手 帮我搜一下 Rust 版本")
+    assert sp._search_query(ev) == "Rust 版本"
+    monkeypatch.setattr(plugin_config, "chat_wake_words", [])
+    assert sp._search_query(PlainEv("帮我搜一下 Rust 版本")) == "Rust 版本"
+
+
+def test_wants_search_via_wake_prefix(monkeypatch):
+    _patch_keys(monkeypatch, ["tavily"])
+    monkeypatch.setattr(plugin_config, "chat_wake_words", ["小助手"])
+
+    class GroupEv(PlainEv):
+        def __init__(self, text, to_me=False):
+            super().__init__(text)
+            self.to_me = to_me
+
+    monkeypatch.setattr(sp, "GroupMessageEvent", GroupEv)
+    monkeypatch.setattr(sp, "group_plugin_enabled", lambda ev, p: True)
+    # 唤醒词开头（免 @）+ 触发词 → 触发；没唤醒（to_me=False 且无唤醒词）→ 不触发
+    assert asyncio.run(sp._wants_search(GroupEv("小助手 联网搜 Rust")))
+    assert not asyncio.run(sp._wants_search(GroupEv("帮我搜 Rust")))
+    # 唤醒词开头但没有搜索触发词也不触发（留给 chat）
+    assert not asyncio.run(sp._wants_search(GroupEv("小助手 今天天气怎么样")))
