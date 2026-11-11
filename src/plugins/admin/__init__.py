@@ -35,6 +35,7 @@ PLUGIN_NAMES = {
     "news": "新闻",
     "ainews": "AI热点",
     "hndaily": "HN日报",
+    "search": "搜索",
     "group_digest": "晚报",
     "remind": "提醒",
     "rank": "排行",
@@ -52,6 +53,7 @@ PLUGIN_ALIASES.update({
     "主动": "proactive", "主动发言": "proactive", "分析": "chat_analyze",
     "jev": "chat_analyze", "一言bot": "quote",
     "热点": "ainews", "ai新闻": "ainews", "日报": "ainews", "tts": "voice",
+    "联网": "search",
 })
 
 

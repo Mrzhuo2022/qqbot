@@ -44,6 +44,7 @@ QQ 消息 ──► NapCat（登录 QQ 号，翻译成 OneBot 11 API）
 | @机器人 /ainews push           | 管理员立即向所有目标群推送 AI 日报                                                                                             |
 | @机器人 /hndaily               | HN 每日科技精选（`/hn日报` 同义，读本机 hn-daily 生成的日报）                                                                  |
 | @机器人 /hndaily push          | 管理员立即向所有目标群推送 HN 日报                                                                                             |
+| @机器人 /search 关键词         | 联网搜索 + LLM 总结（`/搜索` 同义；@我 带「联网」「搜一下」等词也触发，需配搜索源 key）                                        |
 | @机器人 /quote                 | 随机一句「一言」（hi.logacg.com，官方源兜底；`/一言` 同义）                                                                  |
 | @机器人 /digest                | 预览本群今日「群聊晚报」（`/晚报` 同义）；`/digest push` 管理员立即推送所有目标群                                          |
 | @机器人 /remind 30min 拿快递   | 定时提醒，到点在原地 @ 你（`/提醒` 同义；`list` 查看、`cancel 编号` 取消）                                               |
@@ -143,6 +144,27 @@ AI 热点榜 Top 10（公共接口，匿名可用，本地缓存 10 分钟）；
 可 `/hndaily push` 重试。
 群级开关：`/bot off HN日报`，该群的定时推送和 `/hndaily` 命令都停用；
 `hndaily_time` 留空关闭定时。
+
+## 联网搜索
+
+LLM 本身不联网，这个插件补实时信息:`/search 关键词`(`/搜索` 同义),
+或者聊天消息里带「联网」「搜一下」等触发词(子串包含，词表可配
+`search_wake_words`；群聊要 @/引用 bot，随口提到不触发，私聊直接说)。
+搜索结果交 LLM 总结后发回，末尾统一附来源链接
+（链接由系统附加，不让模型生成，防编造）。
+
+- **搜索源四选 N**：填哪个 key 用哪个，多个按 `search_provider_order`
+  顺序兜底（主源失败或没结果自动换下一个），全空 = 功能关闭（聊天触发词
+  不生效，`/search` 提示先配 key）：
+  - **Tavily** `search_tavily_api_key`：海外内容质量好，免费 1000 次/月
+  - **博查 Bocha** `search_bocha_api_key`：国内内容好，按次计费
+  - **Firecrawl** `search_firecrawl_api_key`：搜索+抓取一体，按 credits 计费
+  - **Jina** `search_jina_api_key`：搜索+正文提炼一体，免费约 1M tokens
+- 同一查询 30 分钟内直接回缓存（省 token）；按群限流 `search_rate_per_min`，
+  每次取 `search_max_results` 条
+- 搜索结果是间接提示词注入载体：`<untrusted_data>` 边界包裹 + 注入话术
+  检测，命中时加强防护并在回复尾标注；LLM 总结不进会话历史
+- 群级开关：`/bot off 搜索`，该群的命令和聊天触发都停用
 
 ## 群聊晚报
 
@@ -355,6 +377,9 @@ NapCat 连上后（NoneBot 日志出现 WebSocket 连接），在群里 @它 说
 - **HN 日报**：`hndaily_time` 改推送时间（留空关闭），`hndaily_groups` 指定推送群，
   `hndaily_users` 指定私聊推送的 QQ 号，`hndaily_json` 指向 hn-daily 的
   `output/api/latest.json`（同机部署默认路径即可）。
+- **联网搜索**：`search_tavily_api_key` / `search_bocha_api_key` /
+  `search_firecrawl_api_key` / `search_jina_api_key` 至少填一个，
+  `search_provider_order` 调多源顺序，`search_wake_words` 改聊天触发词。
 - **群聊晚报**：`digest_time` 改出报时间（留空关闭），`digest_groups` 指定推送群，
   `digest_min_messages` 调安静群门槛。
 - **主动回复**：`proactive_enabled` 总开关，`proactive_chance` 评估概率，

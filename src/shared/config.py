@@ -165,6 +165,21 @@ class Config(BaseModel):
     # hn-daily 落盘的 API payload 路径（output/api/latest.json，同机部署直接读文件）
     hndaily_json: str = "/opt/hn-daily/output/api/latest.json"
 
+    # ── 联网搜索（/search；聊天带触发词也触发，结果交 LLM 总结）──
+    # 搜索源 key，填哪个用哪个（官方申请：Tavily/博查/Firecrawl/Jina），全空=功能关闭
+    search_tavily_api_key: str = ""
+    search_bocha_api_key: str = ""
+    search_firecrawl_api_key: str = ""
+    search_jina_api_key: str = ""
+    # 多个源都填了 key 时的使用顺序，主源失败自动兜底下一个
+    search_provider_order: list[str] = ["tavily", "bocha", "firecrawl", "jina"]
+    # 聊天触发词（子串包含）：消息含任一词就转搜索。刻意不含裸「搜索」防误触
+    search_wake_words: list[str] = ["联网", "搜一下", "搜索一下", "帮我搜"]
+    # 每次搜索取的结果条数
+    search_max_results: int = 5
+    # 每群/每人每分钟最多搜索次数
+    search_rate_per_min: int = 4
+
     # ── 群聊晚报（每晚定时总结当天群聊推送）──
     # 生成时间 HH:MM，留空关闭定时（/digest 命令仍可用）
     digest_time: str = "22:30"

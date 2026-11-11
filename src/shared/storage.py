@@ -80,8 +80,9 @@ def set_setting(key: str, value) -> None:
 # 所有支持群级开关的插件名（group_plugin_off 的合法值也来自这里）
 PLUGINS = (
     "chat", "link_parser", "video_parser", "forward_parser",
-    "chat_analyze", "quote", "news", "ainews", "hndaily", "group_digest",
-    "remind", "rank", "weather", "translate", "image_gen", "proactive", "voice",
+    "chat_analyze", "quote", "news", "ainews", "hndaily", "search",
+    "group_digest", "remind", "rank", "weather", "translate", "image_gen",
+    "proactive", "voice",
 )
 
 
